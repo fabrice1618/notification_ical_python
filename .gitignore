@@ -1,0 +1,18 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Data files (contain personal calendar data)
+etat_actuel.json
+new.json
+notifications.json
+url_fab.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
