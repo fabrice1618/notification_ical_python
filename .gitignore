@@ -5,10 +5,11 @@ __pycache__/
 .pytest_cache/
 
 # Data files (contain personal calendar data)
-etat_actuel.json
-new.json
-notifications.json
-url_fab.txt
+sources.json
+etat_*.json
+new_*.json
+notifications/
+calendar_sync.log
 
 # IDE
 .vscode/

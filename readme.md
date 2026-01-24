@@ -1,269 +1,185 @@
-# Système de Gestion et Synchronisation de Calendrier iCal
+# Systeme de Synchronisation de Calendrier iCal
 
-## Énoncé du Projet
+## Description
 
-Développer un système automatisé de surveillance et de synchronisation d'un calendrier iCal distant. Le système doit télécharger périodiquement le calendrier, détecter les modifications, appliquer automatiquement certains changements selon des règles métier, et générer des notifications pour les modifications nécessitant une validation manuelle.
+Systeme de surveillance de calendriers iCal distants avec support multi-sources. Le systeme telecharge periodiquement les calendriers, detecte les modifications et genere des notifications horodatees.
 
-## Spécifications Fonctionnelles
+## Fonctionnalites
 
-### 1. Objectifs
+- **Multi-sources** : Configuration de plusieurs calendriers dans un fichier JSON
+- **Detection des changements** : Comparaison avec l'etat precedent
+- **Notifications horodatees** : Un fichier par execution dans `notifications/`
+- **Date limite** : Possibilite d'ignorer les evenements passes
+- **Gestion des erreurs** : Notifications en cas d'erreur de connexion ou de format
 
-- **Synchronisation automatique** : Télécharger et parser un calendrier iCal depuis une URL webcal
-- **Détection intelligente des modifications** : Comparer l'état actuel avec l'état précédent
-- **Application sélective des changements** : Appliquer automatiquement certaines modifications
-- **Système de notifications** : Alerter sur les modifications nécessitant une approbation
+## Types de Notifications
 
-### 2. Règles Métier
+| Type | Description | Exemples |
+|------|-------------|----------|
+| `information` | Changements mineurs | Salle, titre, description |
+| `notification` | Changements importants | Dates/heures, ajout, suppression |
+| `error` | Erreurs | Connexion, format iCal |
 
-#### 2.1 Modifications Auto-approuvées (Appliquées automatiquement)
-- ✅ **Changement de salle** : La modification est acceptée et appliquée
-- ✅ **Changement de titre** : La modification est acceptée et appliquée
-
-#### 2.2 Modifications Nécessitant Approbation (Notifications générées)
-- ⚠️ **Changement de date de début** : Notification créée, modification en attente
-- ⚠️ **Changement d'heure de début** : Notification créée, modification en attente
-- ⚠️ **Changement de date de fin** : Notification créée, modification en attente
-- ⚠️ **Changement d'heure de fin** : Notification créée, modification en attente
-
-### 3. Gestion des Fichiers
-
-| Fichier | Description | Contenu |
-|---------|-------------|---------|
-| `etat_actuel.json` | État validé du calendrier | Dernier état traité et approuvé |
-| `new.json` | Nouvel état téléchargé | État du calendrier depuis la source |
-| `notifications.json` | Journal des notifications | Historique de toutes les modifications détectées |
-
-### 4. Cycle de Traitement
-
-```
-1. Téléchargement du calendrier iCal
-2. Parsing et extraction des événements
-3. Sauvegarde dans new.json
-4. Comparaison avec etat_actuel.json
-5. Application des règles métier
-6. Génération des notifications
-7. Mise à jour de etat_actuel.json (sauf dates/heures en attente)
-8. Sauvegarde des notifications
-```
-
-## Diagramme de Classes
-
-```mermaid
-classDiagram
-    class CalendarSync {
-        -str calendar_url
-        -str current_state_file
-        -str new_state_file
-        -str notifications_file
-        +__init__(calendar_url, current_state_file, new_state_file, notifications_file)
-        +fetch_calendar() Calendar
-        +parse_events(cal) Dict
-        +load_state(filename) Dict
-        +save_state(events, filename) void
-        +compare_and_process() List~Notification~
-        +process() void
-    }
-
-    class Event {
-        +str uid
-        +str title
-        +str location
-        +str start
-        +str end
-        +str description
-        +str last_modified
-        +to_dict() Dict
-        +from_dict(data) Event
-    }
-
-    class ChangeDetector {
-        +detect_changes(old_event, new_event) List~Change~
-        +categorize_change(change_type) str
-    }
-
-    class Change {
-        +str type
-        +str field
-        +str old_value
-        +str new_value
-        +str action
-        +bool auto_approved
-        +to_dict() Dict
-    }
-
-    class Notification {
-        +str uid
-        +str event_title
-        +str timestamp
-        +List~Change~ changes
-        +str status
-        +str approved_at
-        +to_dict() Dict
-        +requires_approval() bool
-    }
-
-    class NotificationManager {
-        -str notifications_file
-        +load_notifications() List~Notification~
-        +save_notification(notification) void
-        +display_notifications(notifications) void
-        +approve_notification(uid) void
-    }
-
-    class StateManager {
-        +merge_states(current_state, new_state, changes) Dict
-        +apply_auto_approved_changes(current_state, new_state, uid) Dict
-        +is_date_time_change(change_type) bool
-    }
-
-    CalendarSync --> Event : creates
-    CalendarSync --> ChangeDetector : uses
-    CalendarSync --> NotificationManager : uses
-    CalendarSync --> StateManager : uses
-    ChangeDetector --> Change : creates
-    NotificationManager --> Notification : manages
-    Notification --> Change : contains
-    StateManager --> Event : modifies
-```
-
-## Diagramme de Séquence
-
-```mermaid
-sequenceDiagram
-    participant U as Utilisateur/Cron
-    participant CS as CalendarSync
-    participant CD as ChangeDetector
-    participant SM as StateManager
-    participant NM as NotificationManager
-    participant FS as FileSystem
-
-    U->>CS: process()
-    CS->>CS: fetch_calendar()
-    CS->>CS: parse_events()
-    CS->>FS: save_state(new.json)
-    CS->>FS: load_state(etat_actuel.json)
-    
-    loop Pour chaque événement
-        CS->>CD: detect_changes(old, new)
-        CD-->>CS: List[Change]
-        
-        alt Changement Salle/Titre
-            CS->>SM: apply_auto_approved_changes()
-            SM-->>CS: Updated Event
-            Note over CS: Modification appliquée
-        else Changement Date/Heure
-            CS->>NM: create_notification()
-            Note over CS: Notification créée
-        end
-    end
-    
-    CS->>FS: save_state(etat_actuel.json)
-    CS->>NM: save_notification()
-    NM->>FS: save(notifications.json)
-    CS-->>U: Résultat
-```
-
-## Architecture des Données
-
-### Structure Event (JSON)
-
-```json
-{
-  "uid": "event-12345@example.com",
-  "title": "Cours de Mathématiques",
-  "location": "Salle A101",
-  "start": "2024-01-15T09:00:00",
-  "end": "2024-01-15T11:00:00",
-  "description": "Algèbre linéaire",
-  "last_modified": "2024-01-10T14:30:00"
-}
-```
-
-### Structure Notification (JSON)
-
-```json
-{
-  "uid": "event-12345@example.com",
-  "event_title": "Cours de Mathématiques",
-  "timestamp": "2024-01-10T14:30:00",
-  "changes": [
-    {
-      "type": "start_time_change",
-      "field": "Date/Heure de début",
-      "old_value": "2024-01-15T09:00:00",
-      "new_value": "2024-01-15T10:00:00",
-      "action": "require_approval",
-      "auto_approved": false
-    }
-  ],
-  "status": "pending",
-  "approved_at": null
-}
-```
-
----
-
-# Code Python 
-
-voir fichier calendar_sync.py
-
-## Utilisation
-
-### 1. Installation des dépendances
+## Installation
 
 ```bash
 pip install icalendar requests
 ```
 
-### 2. Configuration avec Google Calendar
+## Configuration
 
-1. Ouvrir [Google Calendar](https://calendar.google.com)
-2. Cliquer sur ⚙️ **Paramètres** → **Paramètres**
-3. Dans la colonne gauche, sélectionner le calendrier souhaité
-4. Faire défiler jusqu'à **Intégrer le calendrier**
-5. Copier l'**Adresse secrète au format iCal**
+### Fichier sources.json
 
-Configurer l'URL dans le script :
-
-```python
-CALENDAR_URL = "https://calendar.google.com/calendar/ical/votre_email%40gmail.com/private-abc123/basic.ics"
+```json
+{
+  "cours": {
+    "url": "webcal://example.com/calendar.ics",
+    "description": "Calendrier des cours",
+    "date_limite": "2026-01-01"
+  },
+  "perso": {
+    "url": "https://calendar.google.com/calendar/ical/.../basic.ics",
+    "description": "Calendrier personnel"
+  }
+}
 ```
 
-### 3. Exécution manuelle
+### Parametres de source
+
+| Parametre | Obligatoire | Description |
+|-----------|-------------|-------------|
+| `url` | Oui | URL du calendrier iCal (webcal:// ou https://) |
+| `description` | Non | Description de la source |
+| `date_limite` | Non | Date (YYYY-MM-DD) avant laquelle les evenements sont ignores |
+| `verify_ssl` | Non | Verifier le certificat SSL (defaut: true). Mettre `false` pour les serveurs avec certificats auto-signes |
+
+### Constantes (dans le code)
+
+```python
+REQUEST_TIMEOUT = 30        # Timeout HTTP en secondes
+MAX_RETRIES = 3             # Nombre de tentatives
+CONFIG_FILE = "sources.json"
+NOTIFICATIONS_DIR = "notifications"
+```
+
+## Utilisation
 
 ```bash
-python calendar_sync.py
+# Synchroniser une source
+python calendar_sync.py -s cours
+
+# Avec un fichier de configuration personnalise
+python calendar_sync.py -s cours --config mes_sources.json
 ```
 
-### 4. Approuver une notification
-
-```python
-from calendar_sync import approve_notification_by_uid, list_pending_notifications
-
-# Lister les notifications en attente
-list_pending_notifications()
-
-# Approuver une notification spécifique
-approve_notification_by_uid("event-uid-12345")
-```
-
-### 5. Automatisation (Cron)
+### Automatisation (Cron)
 
 ```bash
 # Synchroniser toutes les heures
-0 * * * * /usr/bin/python3 /path/to/calendar_sync.py >> /var/log/calendar_sync.log 2>&1
+0 * * * * /usr/bin/python3 /path/to/calendar_sync.py -s cours >> /var/log/calendar_sync.log 2>&1
 ```
 
-## Fichiers générés
+## Structure des Fichiers
 
-- `etat_actuel.json` : État validé du calendrier
-- `new.json` : Dernier état téléchargé
-- `notifications.json` : Historique des notifications
+```
+projet/
+├── calendar_sync.py          # Script principal
+├── sources.json              # Configuration des sources
+├── calendar_sync.log         # Fichier de log
+├── etat_cours.json           # Etat valide pour source "cours"
+├── etat_perso.json           # Etat valide pour source "perso"
+└── notifications/
+    ├── cours_20260124_143022.json
+    └── perso_20260124_143500.json
+```
 
-## Travail à faire
+## Format des Notifications
 
-1. **Code review** : Effectuer une revue de code complète et produire un document `code_review.md` argumenté analysant la qualité, la maintenabilité et les éventuelles améliorations du code.
+### Succes
 
-2. **Approbation pour ajout/suppression** : Modifier le programme pour qu'un ajout ou une suppression d'événement déclenche une notification nécessitant une approbation manuelle (au lieu d'être appliqué automatiquement).
+```json
+{
+  "source": "cours",
+  "timestamp": "2026-01-24T14:30:22",
+  "status": "success",
+  "events_count": 15,
+  "changes": [
+    {
+      "uid": "event-123",
+      "event_title": "Cours de maths",
+      "type": "location_change",
+      "field": "Salle",
+      "old_value": "A101",
+      "new_value": "B202",
+      "notification_type": "information"
+    },
+    {
+      "uid": "event-456",
+      "event_title": "TD Physique",
+      "type": "new_event",
+      "field": "Nouvel evenement",
+      "old_value": null,
+      "new_value": "2026-01-25T09:00:00",
+      "notification_type": "notification"
+    }
+  ]
+}
+```
 
-3. **Date limite d'analyse** : Ajouter un paramètre de configuration permettant de définir une date limite avant laquelle les événements ne sont pas analysés (pour ignorer les événements passés).
+### Erreur
+
+```json
+{
+  "source": "cours",
+  "timestamp": "2026-01-24T14:30:22",
+  "status": "error",
+  "error_type": "connection_error",
+  "error_message": "Connection timed out",
+  "events_count": 0,
+  "changes": []
+}
+```
+
+## Types de Changements
+
+| Type | Description | notification_type |
+|------|-------------|-------------------|
+| `title_change` | Changement de titre | information |
+| `location_change` | Changement de salle | information |
+| `description_change` | Changement de description | information |
+| `start_time_change` | Changement date/heure debut | notification |
+| `end_time_change` | Changement date/heure fin | notification |
+| `new_event` | Nouvel evenement | notification |
+| `deleted_event` | Evenement supprime | notification |
+| `connection_error` | Erreur de connexion | error |
+| `format_error` | Erreur de format iCal | error |
+
+## Architecture
+
+### Classes
+
+- **CalendarSync** : Orchestrateur principal
+- **ChangeDetector** : Detection et categorisation des changements
+- **Event** : Representation d'un evenement
+- **Change** : Representation d'un changement
+
+### Flux de traitement
+
+```
+1. Chargement configuration (sources.json)
+2. Chargement etat actuel (etat_{source}.json)
+3. Telechargement du calendrier iCal
+4. Parsing des evenements
+5. Filtrage selon date_limite (si configuree)
+6. Detection des changements
+7. Mise a jour de l'etat (etat_{source}.json)
+8. Generation notification horodatee
+```
+
+## Configuration Google Calendar
+
+1. Ouvrir [Google Calendar](https://calendar.google.com)
+2. Parametres > Parametres
+3. Selectionner le calendrier
+4. Copier l'**Adresse secrete au format iCal**
+5. Ajouter l'URL dans `sources.json`

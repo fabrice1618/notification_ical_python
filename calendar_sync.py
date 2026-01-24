@@ -1,11 +1,67 @@
+"""
+Système de synchronisation de calendrier iCal multi-sources.
+
+Ce script télécharge des calendriers iCal, détecte les changements
+et génère des notifications horodatées pour informer des modifications.
+"""
+
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 from icalendar import Calendar, Component
 import json
+import logging
+import argparse
 from datetime import datetime
 import os
+from urllib.parse import urlparse
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
+import warnings
+
+# =============================================================================
+# CONSTANTES DE CONFIGURATION
+# =============================================================================
+
+# Noms des champs
+FIELD_UID = 'uid'
+FIELD_TITLE = 'title'
+FIELD_LOCATION = 'location'
+FIELD_START = 'start'
+FIELD_END = 'end'
+FIELD_DESCRIPTION = 'description'
+FIELD_LAST_MODIFIED = 'last_modified'
+
+# Configuration réseau
+REQUEST_TIMEOUT = 30
+MAX_RETRIES = 3
+
+# Fichiers et dossiers
+CONFIG_FILE = "sources.json"
+NOTIFICATIONS_DIR = "notifications"
+LOG_FILE = "calendar_sync.log"
+
+# Format de date pour la date limite
+DATE_FORMAT = "%Y-%m-%d"
+
+# =============================================================================
+# CONFIGURATION DU LOGGING
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# ENUMERATIONS
+# =============================================================================
 
 class ChangeType(Enum):
     """Types de changements détectables"""
@@ -13,14 +69,23 @@ class ChangeType(Enum):
     LOCATION = "location_change"
     START_TIME = "start_time_change"
     END_TIME = "end_time_change"
+    DESCRIPTION = "description_change"
     NEW_EVENT = "new_event"
     DELETED_EVENT = "deleted_event"
+    CONNECTION_ERROR = "connection_error"
+    FORMAT_ERROR = "format_error"
 
-class ActionType(Enum):
-    """Types d'actions à effectuer"""
-    AUTO_APPROVED = "auto_approved"
-    REQUIRE_APPROVAL = "require_approval"
-    NOTIFICATION = "notification"
+
+class NotificationType(Enum):
+    """Types de notifications"""
+    INFORMATION = "information"      # Changements mineurs (salle, titre, description)
+    NOTIFICATION = "notification"    # Changements importants (dates/heures)
+    ERROR = "error"                  # Erreurs de connexion ou format
+
+
+# =============================================================================
+# CLASSES DE DONNEES
+# =============================================================================
 
 @dataclass
 class Change:
@@ -29,11 +94,11 @@ class Change:
     field: str
     old_value: Optional[str]
     new_value: Optional[str]
-    action: str
-    auto_approved: bool
+    notification_type: str
 
     def to_dict(self) -> Dict:
         return asdict(self)
+
 
 @dataclass
 class Event:
@@ -53,219 +118,197 @@ class Event:
     def from_dict(cls, data: Dict) -> 'Event':
         return cls(**data)
 
+
+# =============================================================================
+# DETECTION DES CHANGEMENTS
+# =============================================================================
+
 class ChangeDetector:
     """Détecte et catégorise les changements entre deux événements"""
-
-    # Règles métier : définit quels changements sont auto-approuvés
-    AUTO_APPROVED_CHANGES = {
-        ChangeType.TITLE,
-        ChangeType.LOCATION
-    }
-
-    REQUIRE_APPROVAL_CHANGES = {
-        ChangeType.START_TIME,
-        ChangeType.END_TIME
-    }
 
     @staticmethod
     def detect_changes(old_event: Dict, new_event: Dict) -> List[Change]:
         """Détecte tous les changements entre deux versions d'un événement"""
         changes = []
 
-        # Changement de titre (auto-approuvé)
-        if old_event['title'] != new_event['title']:
+        # Changement de titre (information)
+        if old_event.get(FIELD_TITLE) != new_event.get(FIELD_TITLE):
             changes.append(Change(
                 type=ChangeType.TITLE.value,
                 field="Titre",
-                old_value=old_event['title'],
-                new_value=new_event['title'],
-                action=ActionType.AUTO_APPROVED.value,
-                auto_approved=True
+                old_value=old_event.get(FIELD_TITLE),
+                new_value=new_event.get(FIELD_TITLE),
+                notification_type=NotificationType.INFORMATION.value
             ))
 
-        # Changement de salle (auto-approuvé)
-        if old_event['location'] != new_event['location']:
+        # Changement de salle (information)
+        if old_event.get(FIELD_LOCATION) != new_event.get(FIELD_LOCATION):
             changes.append(Change(
                 type=ChangeType.LOCATION.value,
                 field="Salle",
-                old_value=old_event['location'],
-                new_value=new_event['location'],
-                action=ActionType.AUTO_APPROVED.value,
-                auto_approved=True
+                old_value=old_event.get(FIELD_LOCATION),
+                new_value=new_event.get(FIELD_LOCATION),
+                notification_type=NotificationType.INFORMATION.value
             ))
 
-        # Changement d'heure/date de début (nécessite approbation)
-        if old_event['start'] != new_event['start']:
+        # Changement de description (information)
+        if old_event.get(FIELD_DESCRIPTION) != new_event.get(FIELD_DESCRIPTION):
+            changes.append(Change(
+                type=ChangeType.DESCRIPTION.value,
+                field="Description",
+                old_value=old_event.get(FIELD_DESCRIPTION),
+                new_value=new_event.get(FIELD_DESCRIPTION),
+                notification_type=NotificationType.INFORMATION.value
+            ))
+
+        # Changement d'heure/date de début (notification)
+        if old_event.get(FIELD_START) != new_event.get(FIELD_START):
             changes.append(Change(
                 type=ChangeType.START_TIME.value,
                 field="Date/Heure de début",
-                old_value=old_event['start'],
-                new_value=new_event['start'],
-                action=ActionType.REQUIRE_APPROVAL.value,
-                auto_approved=False
+                old_value=old_event.get(FIELD_START),
+                new_value=new_event.get(FIELD_START),
+                notification_type=NotificationType.NOTIFICATION.value
             ))
 
-        # Changement d'heure/date de fin (nécessite approbation)
-        if old_event['end'] != new_event['end']:
+        # Changement d'heure/date de fin (notification)
+        if old_event.get(FIELD_END) != new_event.get(FIELD_END):
             changes.append(Change(
                 type=ChangeType.END_TIME.value,
                 field="Date/Heure de fin",
-                old_value=old_event['end'],
-                new_value=new_event['end'],
-                action=ActionType.REQUIRE_APPROVAL.value,
-                auto_approved=False
+                old_value=old_event.get(FIELD_END),
+                new_value=new_event.get(FIELD_END),
+                notification_type=NotificationType.NOTIFICATION.value
             ))
 
         return changes
 
-class StateManager:
-    """Gère les états du calendrier et applique les modifications"""
 
-    @staticmethod
-    def apply_auto_approved_changes(current_event: Dict, new_event: Dict,
-                                    changes: List[Change]) -> Dict:
-        """
-        Applique les changements auto-approuvés à l'état actuel.
-        Les changements de date/heure ne sont PAS appliqués.
-        """
-        updated_event = current_event.copy()
+# =============================================================================
+# FONCTIONS UTILITAIRES
+# =============================================================================
 
-        for change in changes:
-            if change.auto_approved:
-                if change.type == ChangeType.TITLE.value:
-                    updated_event['title'] = new_event['title']
-                elif change.type == ChangeType.LOCATION.value:
-                    updated_event['location'] = new_event['location']
-                # Les changements de date/heure ne sont jamais appliqués ici
+def load_sources_config(config_file: str) -> Dict:
+    """Charge la configuration des sources depuis un fichier JSON"""
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(f"Fichier de configuration introuvable: {config_file}")
 
-        updated_event['last_modified'] = datetime.now().isoformat()
-        return updated_event
+    with open(config_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-    @staticmethod
-    def is_date_time_change(change_type: str) -> bool:
-        """Vérifie si le changement concerne une date/heure"""
-        return change_type in [
-            ChangeType.START_TIME.value,
-            ChangeType.END_TIME.value
-        ]
 
-class NotificationManager:
-    """Gère les notifications"""
+def save_notification(source: str, notification_data: Dict):
+    """
+    Sauvegarde une notification dans un fichier horodaté.
 
-    def __init__(self, notifications_file: str):
-        self.notifications_file = notifications_file
+    Args:
+        source: Nom de la source
+        notification_data: Données de la notification
+    """
+    # Créer le dossier notifications s'il n'existe pas
+    os.makedirs(NOTIFICATIONS_DIR, exist_ok=True)
 
-    def load_notifications(self) -> List[Dict]:
-        """Charge les notifications existantes"""
-        if os.path.exists(self.notifications_file):
-            try:
-                with open(self.notifications_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"⚠️ Erreur lors de la lecture des notifications: {e}")
-                return []
-        return []
+    # Générer le nom du fichier avec horodatage
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{source}_{timestamp}.json"
+    filepath = os.path.join(NOTIFICATIONS_DIR, filename)
 
-    def save_notification(self, notification: Dict):
-        """Sauvegarde une nouvelle notification"""
-        notifications = self.load_notifications()
-        notifications.append(notification)
+    # Sauvegarder la notification
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(notification_data, f, indent=2, ensure_ascii=False)
 
-        with open(self.notifications_file, 'w', encoding='utf-8') as f:
-            json.dump(notifications, f, indent=2, ensure_ascii=False)
+    logger.info(f"Notification sauvegardée: {filepath}")
+    return filepath
 
-    def display_notifications(self, notifications: List[Dict]):
-        """Affiche les notifications de manière lisible"""
-        if not notifications:
-            print("✓ Aucune notification générée")
-            return
 
-        print(f"\n{'='*80}")
-        print(f"📢 NOTIFICATIONS ({len(notifications)} changement(s) détecté(s))")
-        print(f"{'='*80}\n")
-
-        for i, notif in enumerate(notifications, 1):
-            print(f"[{i}] Événement: {notif['event_title']}")
-            print(f"    UID: {notif['uid']}")
-            print(f"    Date: {notif['timestamp']}")
-            print(f"    Statut: {notif['status']}")
-
-            for change in notif['changes']:
-                if change['auto_approved']:
-                    symbol = "✅ APPLIQUÉ"
-                else:
-                    symbol = "⚠️ EN ATTENTE"
-
-                print(f"    {symbol} {change['field']}:")
-                if change['old_value']:
-                    print(f"       Ancien: {change['old_value']}")
-                if change['new_value']:
-                    print(f"       Nouveau: {change['new_value']}")
-                print(f"       Action: {change['action']}")
-            print()
-
-    def approve_notification(self, uid: str) -> bool:
-        """Approuve manuellement une notification et applique les changements"""
-        notifications = self.load_notifications()
-        modified = False
-
-        for notif in notifications:
-            if notif['uid'] == uid and notif['status'] == 'pending':
-                for change in notif['changes']:
-                    if change['action'] == ActionType.REQUIRE_APPROVAL.value:
-                        change['auto_approved'] = True
-                notif['status'] = 'approved'
-                notif['approved_at'] = datetime.now().isoformat()
-                modified = True
-
-        if modified:
-            with open(self.notifications_file, 'w', encoding='utf-8') as f:
-                json.dump(notifications, f, indent=2, ensure_ascii=False)
-            print(f"✅ Notification {uid} approuvée")
-            return True
-        else:
-            print(f"⚠️ Notification {uid} non trouvée ou déjà approuvée")
-            return False
+# =============================================================================
+# CLASSE PRINCIPALE
+# =============================================================================
 
 class CalendarSync:
     """Classe principale de synchronisation du calendrier"""
 
-    def __init__(self, calendar_url: str,
-                 current_state_file: str = "etat_actuel.json",
-                 new_state_file: str = "new.json",
-                 notifications_file: str = "notifications.json"):
+    def __init__(self, source_name: str, calendar_url: str, date_limite: Optional[str] = None, verify_ssl: bool = True):
         """
         Initialise le système de synchronisation
 
         Args:
+            source_name: Nom de la source (utilisé pour les fichiers)
             calendar_url: URL du calendrier iCal (webcal:// ou https://)
-            current_state_file: Fichier de l'état actuel validé
-            new_state_file: Fichier du nouvel état téléchargé
-            notifications_file: Fichier des notifications
+            date_limite: Date limite (YYYY-MM-DD) avant laquelle les événements sont ignorés
+            verify_ssl: Vérifier le certificat SSL (défaut: True)
         """
-        self.calendar_url = calendar_url.replace("webcal://", "https://")
-        self.current_state_file = current_state_file
-        self.new_state_file = new_state_file
-        self.notifications_file = notifications_file
-
+        self.source_name = source_name
+        self.calendar_url = self._validate_and_normalize_url(calendar_url)
+        self.state_file = f"etat_{source_name}.json"
+        self.new_file = f"new_{source_name}.json"
         self.change_detector = ChangeDetector()
-        self.state_manager = StateManager()
-        self.notification_manager = NotificationManager(notifications_file)
+        self.date_limite = self._parse_date_limite(date_limite)
+        self.verify_ssl = verify_ssl
+
+        if not verify_ssl:
+            logger.warning(f"Vérification SSL désactivée pour {source_name}")
+            # Supprimer les avertissements SSL
+            warnings.filterwarnings('ignore', category=InsecureRequestWarning)
+
+    def _parse_date_limite(self, date_limite: Optional[str]) -> Optional[datetime]:
+        """Parse la date limite si fournie"""
+        if not date_limite:
+            return None
+        try:
+            return datetime.strptime(date_limite, DATE_FORMAT)
+        except ValueError:
+            logger.warning(f"Format de date limite invalide: {date_limite} (attendu: YYYY-MM-DD)")
+            return None
+
+    def _validate_and_normalize_url(self, url: str) -> str:
+        """Valide et normalise l'URL du calendrier"""
+        # Normaliser webcal:// vers https://
+        normalized_url = url.replace("webcal://", "https://")
+
+        # Parser l'URL pour validation
+        try:
+            parsed = urlparse(normalized_url)
+        except Exception:
+            raise ValueError(f"URL invalide: {url}")
+
+        # Vérifier le schéma
+        if parsed.scheme not in ('http', 'https'):
+            raise ValueError(f"Schéma d'URL non supporté: {parsed.scheme}")
+
+        # Vérifier que l'URL a un hôte
+        if not parsed.netloc:
+            raise ValueError(f"URL sans hôte: {url}")
+
+        return normalized_url
 
     def fetch_calendar(self) -> Component:
-        """Télécharge et parse le calendrier iCal"""
-        try:
-            print("📥 Téléchargement du calendrier...")
-            response = requests.get(self.calendar_url, timeout=30)
-            response.raise_for_status()
-            print("✓ Calendrier téléchargé avec succès")
-            return Calendar.from_ical(response.text)
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Erreur lors du téléchargement du calendrier: {e}")
-            raise
-        except Exception as e:
-            print(f"❌ Erreur lors du parsing du calendrier: {e}")
-            raise
+        """Télécharge et parse le calendrier iCal avec retry"""
+        last_exception = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                logger.info(f"Téléchargement du calendrier (tentative {attempt}/{MAX_RETRIES})...")
+                response = requests.get(self.calendar_url, timeout=REQUEST_TIMEOUT, verify=self.verify_ssl)
+                response.raise_for_status()
+                logger.info("Calendrier téléchargé avec succès")
+                return Calendar.from_ical(response.text)
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                logger.warning(f"Échec du téléchargement (tentative {attempt}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES:
+                    import time
+                    wait_time = 2 ** attempt  # Backoff exponentiel
+                    logger.info(f"Nouvelle tentative dans {wait_time} secondes...")
+                    time.sleep(wait_time)
+            except Exception as e:
+                # Erreur de parsing iCal
+                raise ValueError(f"Erreur de format iCal: {e}")
+
+        logger.error(f"Échec du téléchargement après {MAX_RETRIES} tentatives")
+        if last_exception is not None:
+            raise last_exception
+        raise RuntimeError(f"Échec du téléchargement après {MAX_RETRIES} tentatives")
 
     def parse_events(self, cal: Component) -> Dict[str, Dict]:
         """Parse les événements du calendrier"""
@@ -273,267 +316,371 @@ class CalendarSync:
 
         for component in cal.walk():
             if component.name == "VEVENT":
-                uid = str(component.get('uid'))
+                uid = component.get('uid')
+
+                # Validation de l'UID
+                if not uid:
+                    logger.warning("Événement sans UID ignoré")
+                    continue
+
+                uid = str(uid).strip()
+                if not uid:
+                    logger.warning("Événement avec UID vide ignoré")
+                    continue
 
                 # Gestion des dates/heures
                 start_dt = component.get('dtstart')
                 end_dt = component.get('dtend')
 
+                try:
+                    start_value = start_dt.dt.isoformat() if start_dt else None
+                    end_value = end_dt.dt.isoformat() if end_dt else None
+                except Exception as e:
+                    logger.warning(f"Erreur de parsing des dates pour {uid}: {e}")
+                    start_value = None
+                    end_value = None
+
                 event_data = {
-                    'uid': uid,
-                    'title': str(component.get('summary', '')),
-                    'location': str(component.get('location', '')),
-                    'start': start_dt.dt.isoformat() if start_dt else None,
-                    'end': end_dt.dt.isoformat() if end_dt else None,
-                    'description': str(component.get('description', '')),
-                    'last_modified': datetime.now().isoformat()
+                    FIELD_UID: uid,
+                    FIELD_TITLE: str(component.get('summary', '') or ''),
+                    FIELD_LOCATION: str(component.get('location', '') or ''),
+                    FIELD_START: start_value,
+                    FIELD_END: end_value,
+                    FIELD_DESCRIPTION: str(component.get('description', '') or ''),
+                    FIELD_LAST_MODIFIED: datetime.now().isoformat()
                 }
 
                 events[uid] = event_data
 
+        logger.info(f"{len(events)} événement(s) parsé(s)")
         return events
 
-    def load_state(self, filename: str) -> Dict[str, Dict]:
-        """Charge l'état depuis un fichier JSON"""
-        if os.path.exists(filename):
+    def _is_event_after_date_limite(self, event: Dict) -> bool:
+        """Vérifie si l'événement est après la date limite"""
+        if not self.date_limite:
+            return True  # Pas de limite, tous les événements sont inclus
+
+        start_str = event.get(FIELD_START)
+        if not start_str:
+            return True  # Pas de date de début, on inclut l'événement
+
+        try:
+            # Parser la date ISO (peut être date ou datetime)
+            if 'T' in start_str:
+                event_date = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+            else:
+                event_date = datetime.strptime(start_str, DATE_FORMAT)
+
+            # Comparer uniquement les dates (sans l'heure)
+            return event_date.date() >= self.date_limite.date()
+        except (ValueError, AttributeError):
+            return True  # En cas d'erreur, on inclut l'événement
+
+    def filter_events_by_date(self, events: Dict[str, Dict]) -> Dict[str, Dict]:
+        """Filtre les événements selon la date limite"""
+        if not self.date_limite:
+            return events
+
+        filtered = {
+            uid: event for uid, event in events.items()
+            if self._is_event_after_date_limite(event)
+        }
+
+        excluded_count = len(events) - len(filtered)
+        if excluded_count > 0:
+            logger.info(f"{excluded_count} événement(s) ignoré(s) (avant {self.date_limite.strftime(DATE_FORMAT)})")
+
+        return filtered
+
+    def load_state(self) -> Dict[str, Dict]:
+        """Charge l'état depuis le fichier JSON"""
+        if os.path.exists(self.state_file):
             try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if not content.strip():
+                        logger.warning(f"Fichier d'état vide: {self.state_file}")
+                        return {}
+                    return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Fichier d'état corrompu {self.state_file}: {e}")
+                raise ValueError(f"Fichier d'état corrompu: {e}")
             except Exception as e:
-                print(f"⚠️ Erreur lors de la lecture de {filename}: {e}")
-                return {}
+                logger.error(f"Erreur lors de la lecture de {self.state_file}: {e}")
+                raise
+        logger.info(f"Fichier d'état inexistant: {self.state_file}")
         return {}
 
-    def save_state(self, events: Dict[str, Dict], filename: str):
-        """Sauvegarde l'état dans un fichier JSON"""
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(events, f, indent=2, ensure_ascii=False)
+    def save_state(self, events: Dict[str, Dict]):
+        """Sauvegarde l'état dans le fichier JSON de manière atomique"""
+        temp_file = f"{self.state_file}.tmp"
+        try:
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(events, f, indent=2, ensure_ascii=False)
+            os.replace(temp_file, self.state_file)
+            logger.debug(f"État sauvegardé dans {self.state_file}")
+        except Exception as e:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            logger.error(f"Erreur lors de la sauvegarde de {self.state_file}: {e}")
+            raise
 
-    def compare_and_process(self) -> List[Dict]:
+    def save_new_state(self, events: Dict[str, Dict]):
+        """Sauvegarde le nouvel état téléchargé dans new_{source}.json"""
+        temp_file = f"{self.new_file}.tmp"
+        try:
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(events, f, indent=2, ensure_ascii=False)
+            os.replace(temp_file, self.new_file)
+            logger.debug(f"Nouvel état sauvegardé dans {self.new_file}")
+        except Exception as e:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            logger.error(f"Erreur lors de la sauvegarde de {self.new_file}: {e}")
+            raise
+
+    def detect_all_changes(self, old_state: Dict, new_state: Dict) -> List[Dict]:
         """
-        Compare les états et traite les changements selon les règles métier
+        Détecte tous les changements entre l'ancien et le nouvel état
 
         Returns:
-            Liste des notifications générées
+            Liste des changements détectés
         """
-        current_state = self.load_state(self.current_state_file)
-        new_state = self.load_state(self.new_state_file)
-
-        notifications = []
-        updated_current_state = current_state.copy()
+        changes_list = []
 
         # Traiter les événements modifiés ou existants
         for uid, new_event in new_state.items():
-            if uid in current_state:
-                old_event = current_state[uid]
+            if uid in old_state:
+                old_event = old_state[uid]
                 changes = self.change_detector.detect_changes(old_event, new_event)
 
-                if changes:
-                    # Séparer les changements auto-approuvés et ceux nécessitant approbation
-                    auto_approved_changes = [c for c in changes if c.auto_approved]
-                    require_approval_changes = [c for c in changes if not c.auto_approved]
-
-                    # Appliquer les changements auto-approuvés (salle, titre)
-                    if auto_approved_changes:
-                        updated_current_state[uid] = self.state_manager.apply_auto_approved_changes(
-                            current_state[uid], new_event, auto_approved_changes
-                        )
-
-                    # Créer une notification pour TOUS les changements
-                    notification = {
+                for change in changes:
+                    changes_list.append({
                         'uid': uid,
-                        'event_title': new_event['title'],
-                        'timestamp': datetime.now().isoformat(),
-                        'changes': [c.to_dict() for c in changes],
-                        'status': 'pending' if require_approval_changes else 'applied',
-                        'approved_at': None if require_approval_changes else datetime.now().isoformat()
-                    }
-                    notifications.append(notification)
+                        'event_title': new_event.get(FIELD_TITLE),
+                        'type': change.type,
+                        'field': change.field,
+                        'old_value': change.old_value,
+                        'new_value': change.new_value,
+                        'notification_type': change.notification_type
+                    })
             else:
-                # Nouvel événement - ajouté automatiquement
-                updated_current_state[uid] = new_event
-                notification = {
+                # Nouvel événement (nécessite approbation)
+                changes_list.append({
                     'uid': uid,
-                    'event_title': new_event['title'],
-                    'timestamp': datetime.now().isoformat(),
-                    'changes': [{
-                        'type': ChangeType.NEW_EVENT.value,
-                        'field': 'Nouvel événement',
-                        'old_value': None,
-                        'new_value': 'Événement créé',
-                        'action': ActionType.AUTO_APPROVED.value,
-                        'auto_approved': True
-                    }],
-                    'status': 'applied',
-                    'approved_at': datetime.now().isoformat()
-                }
-                notifications.append(notification)
+                    'event_title': new_event.get(FIELD_TITLE),
+                    'type': ChangeType.NEW_EVENT.value,
+                    'field': 'Nouvel événement',
+                    'old_value': None,
+                    'new_value': new_event.get(FIELD_START),
+                    'notification_type': NotificationType.NOTIFICATION.value
+                })
+                logger.info(f"Nouvel événement détecté: {uid}")
 
         # Traiter les événements supprimés
-        for uid in set(current_state.keys()) - set(new_state.keys()):
-            del updated_current_state[uid]
-            notification = {
+        for uid in set(old_state.keys()) - set(new_state.keys()):
+            changes_list.append({
                 'uid': uid,
-                'event_title': current_state[uid]['title'],
-                'timestamp': datetime.now().isoformat(),
-                'changes': [{
-                    'type': ChangeType.DELETED_EVENT.value,
-                    'field': 'Événement supprimé',
-                    'old_value': current_state[uid]['title'],
-                    'new_value': None,
-                    'action': ActionType.NOTIFICATION.value,
-                    'auto_approved': None
-                }],
-                'status': 'deleted',
-                'approved_at': datetime.now().isoformat()
-            }
-            notifications.append(notification)
+                'event_title': old_state[uid].get(FIELD_TITLE),
+                'type': ChangeType.DELETED_EVENT.value,
+                'field': 'Événement supprimé',
+                'old_value': old_state[uid].get(FIELD_TITLE),
+                'new_value': None,
+                'notification_type': NotificationType.NOTIFICATION.value
+            })
+            logger.info(f"Événement supprimé détecté: {uid}")
 
-        # Sauvegarder l'état actuel mis à jour (avec changements auto-approuvés seulement)
-        self.save_state(updated_current_state, self.current_state_file)
+        return changes_list
 
-        return notifications
+    def process(self) -> Dict:
+        """
+        Processus principal de synchronisation
 
-    def process(self):
-        """Processus principal de synchronisation"""
-        print("\n" + "="*80)
-        print("🔄 SYNCHRONISATION DU CALENDRIER")
-        print("="*80 + "\n")
+        Returns:
+            Dictionnaire avec les résultats de la synchronisation
+        """
+        logger.info("=" * 60)
+        logger.info(f"SYNCHRONISATION - Source: {self.source_name}")
+        logger.info("=" * 60)
+
+        result = {
+            'source': self.source_name,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'success',
+            'events_count': 0,
+            'changes': []
+        }
 
         try:
-            # Étape 1 : Télécharger et parser
+            # Étape 1 : Charger l'état actuel
+            logger.info(f"Chargement de {self.state_file}...")
+            old_state = self.load_state()
+            logger.info(f"{len(old_state)} événement(s) dans l'état actuel")
+
+            # Étape 2 : Télécharger et parser le calendrier
             cal = self.fetch_calendar()
+            logger.info("Analyse des événements...")
+            new_state = self.parse_events(cal)
+            logger.info(f"{len(new_state)} événement(s) trouvé(s)")
 
-            # Étape 2 : Extraire les événements
-            print("📊 Analyse des événements...")
-            new_events = self.parse_events(cal)
-            print(f"✓ {len(new_events)} événement(s) trouvé(s)")
+            # Étape 3 : Sauvegarder le nouvel état brut
+            logger.info(f"Sauvegarde du nouvel état dans {self.new_file}...")
+            self.save_new_state(new_state)
 
-            # Étape 3 : Sauvegarder le nouvel état
-            print(f"💾 Sauvegarde dans {self.new_state_file}...")
-            self.save_state(new_events, self.new_state_file)
+            # Étape 4 : Filtrer selon la date limite
+            new_state = self.filter_events_by_date(new_state)
+            old_state = self.filter_events_by_date(old_state)
+            result['events_count'] = len(new_state)
 
-            # Étape 4 : Charger l'état actuel
-            print(f"📂 Chargement de {self.current_state_file}...")
-            current_state = self.load_state(self.current_state_file)
-            print(f"✓ {len(current_state)} événement(s) dans l'état actuel")
+            # Étape 5 : Détecter les changements
+            logger.info("Détection des changements...")
+            changes = self.detect_all_changes(old_state, new_state)
+            result['changes'] = changes
 
-            # Étape 5 : Comparer et traiter
-            print("\n🔍 Comparaison et traitement des changements...")
-            notifications = self.compare_and_process()
-
-            # Étape 6 : Sauvegarder les notifications
-            if notifications:
-                print(f"\n📝 {len(notifications)} notification(s) générée(s)")
-                for notif in notifications:
-                    self.notification_manager.save_notification(notif)
-
-                self.notification_manager.display_notifications(notifications)
+            if changes:
+                logger.info(f"{len(changes)} changement(s) détecté(s)")
             else:
-                print("\n✓ Aucun changement détecté")
+                logger.info("Aucun changement détecté")
+
+            # Étape 6 : Remplacer l'ancien état par le nouveau
+            logger.info(f"Mise à jour de {self.state_file}...")
+            self.save_state(new_state)
+
+            # Étape 7 : Supprimer le fichier temporaire new_*.json
+            if os.path.exists(self.new_file):
+                os.remove(self.new_file)
+                logger.debug(f"Fichier temporaire supprimé: {self.new_file}")
 
             # Résumé
-            print("\n" + "="*80)
-            print("✅ SYNCHRONISATION TERMINÉE")
-            print("="*80)
-            print(f"📁 État actuel: {self.current_state_file}")
-            print(f"📁 Nouvel état: {self.new_state_file}")
-            print(f"📁 Notifications: {self.notifications_file}")
-            print()
+            logger.info("=" * 60)
+            logger.info("SYNCHRONISATION TERMINÉE")
+            logger.info("=" * 60)
 
-            return notifications
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur de connexion: {e}")
+            result['status'] = 'error'
+            result['error_type'] = ChangeType.CONNECTION_ERROR.value
+            result['error_message'] = str(e)
 
-        except Exception as e:
-            print(f"\n❌ ERREUR: {e}")
-            raise
+        except ValueError as e:
+            if "format iCal" in str(e) or "corrompu" in str(e):
+                logger.error(f"Erreur de format: {e}")
+                result['status'] = 'error'
+                result['error_type'] = ChangeType.FORMAT_ERROR.value
+                result['error_message'] = str(e)
+            else:
+                raise
 
-# Fonctions utilitaires
-def approve_notification_by_uid(uid: str, notifications_file: str = "notifications.json",
-                                current_state_file: str = "etat_actuel.json",
-                                new_state_file: str = "new.json"):
-    """
-    Approuve manuellement une notification et applique les changements de date/heure
+        return result
 
-    Args:
-        uid: UID de l'événement à approuver
-        notifications_file: Fichier des notifications
-        current_state_file: Fichier de l'état actuel
-        new_state_file: Fichier du nouvel état
-    """
-    # Approuver la notification
-    nm = NotificationManager(notifications_file)
-    if not nm.approve_notification(uid):
-        return False
 
-    # Appliquer les changements de date/heure
-    current_state = {}
-    new_state = {}
+# =============================================================================
+# AFFICHAGE
+# =============================================================================
 
-    if os.path.exists(current_state_file):
-        with open(current_state_file, 'r', encoding='utf-8') as f:
-            current_state = json.load(f)
-
-    if os.path.exists(new_state_file):
-        with open(new_state_file, 'r', encoding='utf-8') as f:
-            new_state = json.load(f)
-
-    if uid in current_state and uid in new_state:
-        # Appliquer les changements de date/heure
-        current_state[uid]['start'] = new_state[uid]['start']
-        current_state[uid]['end'] = new_state[uid]['end']
-        current_state[uid]['last_modified'] = datetime.now().isoformat()
-
-        with open(current_state_file, 'w', encoding='utf-8') as f:
-            json.dump(current_state, f, indent=2, ensure_ascii=False)
-
-        print(f"✅ Changements de date/heure appliqués pour l'événement {uid}")
-        return True
-
-    return False
-
-def list_pending_notifications(notifications_file: str = "notifications.json"):
-    """Liste toutes les notifications en attente d'approbation"""
-    nm = NotificationManager(notifications_file)
-    notifications = nm.load_notifications()
-
-    pending = [n for n in notifications if n['status'] == 'pending']
-
-    if not pending:
-        print("✓ Aucune notification en attente")
+def display_changes(changes: List[Dict]):
+    """Affiche les changements de manière lisible"""
+    if not changes:
+        print("\nAucun changement détecté")
         return
 
-    print(f"\n⚠️ {len(pending)} notification(s) en attente d'approbation:\n")
+    print(f"\n{'='*60}")
+    print(f"CHANGEMENTS DETECTES ({len(changes)})")
+    print(f"{'='*60}\n")
 
-    for i, notif in enumerate(pending, 1):
-        print(f"[{i}] {notif['event_title']}")
-        print(f"    UID: {notif['uid']}")
-        print(f"    Date: {notif['timestamp']}")
-
-        for change in notif['changes']:
-            if not change['auto_approved']:
-                print(f"    - {change['field']}: {change['old_value']} → {change['new_value']}")
+    for i, change in enumerate(changes, 1):
+        notif_type = change.get('notification_type', '').upper()
+        print(f"[{i}] [{notif_type}] {change['event_title']}")
+        print(f"    Type: {change['type']}")
+        print(f"    Champ: {change['field']}")
+        if change['old_value']:
+            print(f"    Ancien: {change['old_value']}")
+        if change['new_value']:
+            print(f"    Nouveau: {change['new_value']}")
         print()
 
-# Point d'entrée principal
-if __name__ == "__main__":
-    # Configuration
-    CALENDAR_URL = "webcal://<your_url>"
 
-    # Créer et exécuter la synchronisation
-    sync = CalendarSync(
-        calendar_url=CALENDAR_URL,
-        current_state_file="etat_actuel.json",
-        new_state_file="new.json",
-        notifications_file="notifications.json"
+# =============================================================================
+# POINT D'ENTREE
+# =============================================================================
+
+def main():
+    """Point d'entrée principal avec gestion des arguments CLI"""
+    parser = argparse.ArgumentParser(
+        description="Synchronisation de calendrier iCal multi-sources"
+    )
+    parser.add_argument(
+        '-s', '--source',
+        required=True,
+        help="Nom de la source à synchroniser (défini dans sources.json)"
+    )
+    parser.add_argument(
+        '--config',
+        default=CONFIG_FILE,
+        help=f"Fichier de configuration des sources (défaut: {CONFIG_FILE})"
     )
 
+    args = parser.parse_args()
+
     try:
-        notifications = sync.process()
+        # Charger la configuration
+        logger.info(f"Chargement de la configuration depuis {args.config}...")
+        sources = load_sources_config(args.config)
 
-        # Afficher les notifications en attente
-        print("\n" + "-"*80)
-        list_pending_notifications()
+        # Vérifier que la source existe
+        if args.source not in sources:
+            available = ', '.join(sources.keys())
+            logger.error(f"Source '{args.source}' introuvable. Sources disponibles: {available}")
+            exit(1)
 
-    except Exception as e:
-        print(f"❌ Erreur fatale: {e}")
+        source_config = sources[args.source]
+        logger.info(f"Source: {args.source} - {source_config.get('description', '')}")
+
+        # Afficher la date limite si configurée
+        date_limite = source_config.get('date_limite')
+        if date_limite:
+            logger.info(f"Date limite: {date_limite} (événements antérieurs ignorés)")
+
+        # Vérification SSL (défaut: True)
+        verify_ssl = source_config.get('verify_ssl', True)
+
+        # Créer et exécuter la synchronisation
+        sync = CalendarSync(
+            source_name=args.source,
+            calendar_url=source_config['url'],
+            date_limite=date_limite,
+            verify_ssl=verify_ssl
+        )
+
+        result = sync.process()
+
+        # Sauvegarder la notification
+        notification_file = save_notification(
+            source=args.source,
+            notification_data=result
+        )
+
+        # Afficher les changements
+        if result['status'] == 'success':
+            display_changes(result.get('changes', []))
+            print(f"\nFichiers:")
+            print(f"  - État: etat_{args.source}.json")
+            print(f"  - Notification: {notification_file}")
+        else:
+            print(f"\nERREUR: {result.get('error_type')}")
+            print(f"Message: {result.get('error_message')}")
+            print(f"Notification d'erreur: {notification_file}")
+
+    except FileNotFoundError as e:
+        logger.error(str(e))
         exit(1)
+    except ValueError as e:
+        logger.error(f"Erreur de configuration: {e}")
+        exit(1)
+    except Exception as e:
+        logger.error(f"Erreur fatale: {e}")
+        exit(1)
+
+
+if __name__ == "__main__":
+    main()
