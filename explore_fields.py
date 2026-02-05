@@ -160,7 +160,7 @@ def main() -> None:
         print(f"  {field:<25} -> {', '.join(presence)}")
 
     # Champs actuellement utilisés vs disponibles
-    used_fields: set[str] = {'UID', 'SUMMARY', 'LOCATION', 'DTSTART', 'DTEND', 'DESCRIPTION'}
+    used_fields: set[str] = {'UID', 'SUMMARY', 'LOCATION', 'DTSTART', 'DTEND', 'DESCRIPTION', 'DTSTAMP', 'STATUS'}
     unused_fields: set[str] = all_fields - used_fields
 
     print(f"\n{'='*70}")

@@ -35,7 +35,8 @@ pip install icalendar requests
   "cours": {
     "url": "webcal://example.com/calendar.ics",
     "description": "Calendrier des cours",
-    "date_limite": "2026-01-01"
+    "date_debut": "2026-01-01",
+    "date_fin": "2026-06-30"
   },
   "perso": {
     "url": "https://calendar.google.com/calendar/ical/.../basic.ics",
@@ -50,7 +51,8 @@ pip install icalendar requests
 |-----------|-------------|-------------|
 | `url` | Oui | URL du calendrier iCal (webcal:// ou https://) |
 | `description` | Non | Description de la source |
-| `date_limite` | Non | Date (YYYY-MM-DD) avant laquelle les evenements sont ignores |
+| `date_debut` | Non | Date (YYYY-MM-DD) avant laquelle les evenements sont ignores |
+| `date_fin` | Non | Date (YYYY-MM-DD) apres laquelle les evenements sont ignores |
 | `verify_ssl` | Non | Verifier le certificat SSL (defaut: true). Mettre `false` pour les serveurs avec certificats auto-signes |
 
 ### Constantes (dans le code)
@@ -170,7 +172,7 @@ projet/
 2. Chargement etat actuel (etat_{source}.json)
 3. Telechargement du calendrier iCal
 4. Parsing des evenements
-5. Filtrage selon date_limite (si configuree)
+5. Filtrage selon date_debut/date_fin (si configurees)
 6. Detection des changements
 7. Mise a jour de l'etat (etat_{source}.json)
 8. Generation notification horodatee

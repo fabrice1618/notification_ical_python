@@ -30,28 +30,49 @@ python calendar_sync.py -s cours
 # With custom config file
 python calendar_sync.py -s cours --config my_sources.json
 
+# Dry-run: detect changes without saving state
+python calendar_sync.py -s cours -d
+
+# With notification file generation
+python calendar_sync.py -s cours -n
+
+# Dry-run with notifications
+python calendar_sync.py -s cours -d -n
+
 # Explore available fields in calendars
 python explore_fields.py
 
 # Schedule via cron (hourly example)
-0 * * * * /usr/bin/python3 /path/to/calendar_sync.py -s cours >> /var/log/calendar_sync.log 2>&1
+0 * * * * /usr/bin/python3 /path/to/calendar_sync.py -s cours -n >> /var/log/calendar_sync.log 2>&1
 ```
+
+| Option | Description |
+|--------|-------------|
+| `-s`, `--source` | Source name to sync (required) |
+| `--config` | Config file path (default: sources.json) |
+| `-d`, `--dry-run` | Run without saving state (etat_{source}.json is not modified) |
+| `-n`, `--notification` | Generate notification files in notifications/ |
 
 ## Architecture
 
 The system follows a pipeline pattern:
 
-1. `CalendarSync` - Main orchestrator that coordinates the sync process
-2. `ChangeDetector` - Compares events and categorizes changes by type
+1. `Source` - Calendar source configuration (URL, SSL) with `load_config()` factory
+2. `DateFilter` - Filters events by date range `[date_debut, date_fin]`
+3. `CalendarSource` - Downloads, parses and filters iCal events via `fetch()`
+4. `CalendarSync` - Main orchestrator: change detection, state management, sync process
 
 Key data classes:
+- `Source` - Source configuration from `sources.json` via `load_config(name, config_file)`, owns a `DateFilter`
+- `DateFilter` - Date range filter with `filter()` method
+- `CalendarSource` - Calendar downloader/parser with `events` dict and `iter_events()` generator
 - `Event` - Calendar event representation with `to_dict()` and `from_dict()`
 - `Change` - Single detected modification with notification type
 - `ChangeType` / `NotificationType` - Enums for change categorization
 
 Key functions:
-- `load_sources_config()` - Loads multi-source configuration
-- `save_notification()` - Saves timestamped notification files
+- `save_notification()` - Saves timestamped change notification files
+- `save_process()` - Saves process report files
 
 ## Data Files
 
@@ -59,9 +80,10 @@ Key functions:
 |------|---------|
 | `sources.json` | Calendar sources configuration (user-specific, gitignored) |
 | `sources_example.json` | Example configuration template |
-| `etat_{source}.json` | Validated calendar state for each source |
-| `calendar_sync.log` | Log file |
-| `notifications/{source}_{timestamp}.json` | Timestamped notification files |
+| `data/etat_{source}.json` | Validated calendar state for each source |
+| `data/calendar_sync.log` | Log file |
+| `notifications/process_{timestamp}.json` | Process report (status, config, counters) |
+| `notifications/{source}_{timestamp}.json` | Change notifications (only with --notification) |
 
 ## Processing Flow
 
@@ -70,10 +92,11 @@ Key functions:
 2. Load current state (etat_{source}.json)
 3. Download iCal calendar
 4. Parse events
-5. Filter by date_limite (if configured)
+5. Filter by date_debut/date_fin (if configured)
 6. Detect changes
-7. Update validated state (etat_{source}.json)
-8. Generate timestamped notification
+7. Update validated state (etat_{source}.json)  [skipped with --dry-run]
+8. Save process report (process_{timestamp}.json)
+9. Save change notification                      [only with --notification]
 ```
 
 ## Source Configuration
@@ -83,7 +106,8 @@ Key functions:
   "source_name": {
     "url": "webcal://example.com/calendar.ics",
     "description": "Description",
-    "date_limite": "2026-01-01",
+    "date_debut": "2026-01-01",
+    "date_fin": "2026-06-30",
     "verify_ssl": true
   }
 }
@@ -93,5 +117,6 @@ Key functions:
 |-----------|----------|-------------|
 | `url` | Yes | iCal URL (webcal:// or https://) |
 | `description` | No | Source description |
-| `date_limite` | No | Ignore events before this date (YYYY-MM-DD) |
+| `date_debut` | No | Ignore events before this date (YYYY-MM-DD) |
+| `date_fin` | No | Ignore events after this date (YYYY-MM-DD) |
 | `verify_ssl` | No | Verify SSL certificate (default: true) |

@@ -2,12 +2,13 @@
   "cours": {
     "url": "webcal://example.com/calendar.ics",
     "description": "Calendrier des cours",
-    "date_limite": "2026-01-01"
+    "date_debut": "2026-01-01",
+    "date_fin": "2026-06-30"
   },
   "ecole": {
     "url": "https://serveur-ecole.fr/calendar.ics",
     "description": "Calendrier avec certificat SSL non vérifié",
-    "date_limite": "2025-09-01",
+    "date_debut": "2025-09-01",
     "verify_ssl": false
   }
 }
