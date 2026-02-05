@@ -47,6 +47,10 @@ LOG_FILE = os.path.join(DATA_DIR, "calendar_sync.log")
 # Format de date pour la date limite
 DATE_FORMAT = "%Y-%m-%d"
 
+# Plage de dates globale pour le filtrage des événements
+DATE_DEBUT = "2025-08-01"
+DATE_FIN = "2026-07-31"
+
 # Horodatage unique pour tout le processus
 NOW = datetime.now()
 
@@ -85,13 +89,6 @@ class ChangeType(Enum):
     FORMAT_ERROR = "format_error"
 
 
-class NotificationType(Enum):
-    """Types de notifications"""
-    INFORMATION = "information"      # Changements mineurs (salle, titre, description)
-    NOTIFICATION = "notification"    # Changements importants (dates/heures)
-    ERROR = "error"                  # Erreurs de connexion ou format
-
-
 # =============================================================================
 # CLASSES DE DONNEES
 # =============================================================================
@@ -103,7 +100,6 @@ class Change:
     field: str
     old_value: Optional[str]
     new_value: Optional[str]
-    notification_type: str
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -184,16 +180,11 @@ def save_process(process_data: Dict):
 # =============================================================================
 
 class DateFilter:
-    """Filtre les événements selon une plage de dates [date_debut, date_fin]"""
+    """Filtre les événements selon la plage de dates globale [DATE_DEBUT, DATE_FIN]"""
 
-    def __init__(self, date_debut: Optional[str] = None, date_fin: Optional[str] = None):
-        """
-        Args:
-            date_debut: Date de début (YYYY-MM-DD), événements antérieurs ignorés
-            date_fin: Date de fin (YYYY-MM-DD), événements postérieurs ignorés
-        """
-        self.date_debut = self._parse_date(date_debut, "date_debut")
-        self.date_fin = self._parse_date(date_fin, "date_fin")
+    def __init__(self):
+        self.date_debut = self._parse_date(DATE_DEBUT, "DATE_DEBUT")
+        self.date_fin = self._parse_date(DATE_FIN, "DATE_FIN")
 
     @staticmethod
     def _parse_date(date_str: Optional[str], field_name: str) -> Optional[datetime]:
@@ -232,20 +223,18 @@ class DateFilter:
 class Source:
     """Représente une source de calendrier configurée dans sources.json"""
 
-    def __init__(self, name: str, url: str, description: str = '', date_debut: Optional[str] = None, date_fin: Optional[str] = None, verify_ssl: bool = True):
+    def __init__(self, name: str, url: str, description: str = '', verify_ssl: bool = True):
         """
         Args:
             name: Nom de la source (clé dans sources.json)
             url: URL du calendrier iCal (webcal:// ou https://)
             description: Description de la source
-            date_debut: Date de début (YYYY-MM-DD), événements antérieurs ignorés
-            date_fin: Date de fin (YYYY-MM-DD), événements postérieurs ignorés
             verify_ssl: Vérifier le certificat SSL (défaut: True)
         """
         self.name = name
         self.url = self._validate_and_normalize_url(url)
         self.description = description
-        self.date_filter = DateFilter(date_debut, date_fin)
+        self.date_filter = DateFilter()
         self.verify_ssl = verify_ssl
         self.state_file = os.path.join(DATA_DIR, f"etat_{name}.json")
 
@@ -254,24 +243,21 @@ class Source:
             warnings.filterwarnings('ignore', category=InsecureRequestWarning)
 
     @classmethod
-    def load_config(cls, name: str, config_file: str = CONFIG_FILE) -> 'Source':
-        """Charge une source depuis le fichier de configuration"""
+    def load_all_configs(cls, config_file: str = CONFIG_FILE) -> List['Source']:
+        """Charge toutes les sources depuis le fichier de configuration"""
         sources = lire_json(config_file)
         if sources is None:
             raise FileNotFoundError(f"Fichier de configuration introuvable ou vide: {config_file}")
 
-        if name not in sources:
-            raise ValueError(f"Source '{name}' introuvable dans la configuration.")
-
-        config = sources[name]
-        return cls(
-            name=name,
-            url=config['url'],
-            description=config.get('description', ''),
-            date_debut=config.get('date_debut'),
-            date_fin=config.get('date_fin'),
-            verify_ssl=config.get('verify_ssl', True)
-        )
+        return [
+            cls(
+                name=name,
+                url=config['url'],
+                description=config.get('description', ''),
+                verify_ssl=config.get('verify_ssl', True)
+            )
+            for name, config in sources.items()
+        ]
 
     @staticmethod
     def _validate_and_normalize_url(url: str) -> str:
@@ -311,11 +297,6 @@ class CalendarSource:
         """Télécharge et parse le calendrier. Stocke le résultat dans self.events."""
         cal = self._download()
         self.events = self._parse(cal)
-
-    def iter_events(self):
-        """Génère des objets Event à partir des événements stockés"""
-        for event_data in self.events.values():
-            yield Event.from_dict(event_data)
 
     def _download(self) -> Component:
         """Télécharge et parse le calendrier iCal avec retry"""
@@ -403,7 +384,6 @@ class CalendarSync:
                 field="Titre",
                 old_value=old_event.get(FIELD_TITLE),
                 new_value=new_event.get(FIELD_TITLE),
-                notification_type=NotificationType.INFORMATION.value
             ))
 
         if old_event.get(FIELD_LOCATION) != new_event.get(FIELD_LOCATION):
@@ -412,7 +392,6 @@ class CalendarSync:
                 field="Salle",
                 old_value=old_event.get(FIELD_LOCATION),
                 new_value=new_event.get(FIELD_LOCATION),
-                notification_type=NotificationType.INFORMATION.value
             ))
 
         if old_event.get(FIELD_DESCRIPTION) != new_event.get(FIELD_DESCRIPTION):
@@ -421,7 +400,6 @@ class CalendarSync:
                 field="Description",
                 old_value=old_event.get(FIELD_DESCRIPTION),
                 new_value=new_event.get(FIELD_DESCRIPTION),
-                notification_type=NotificationType.INFORMATION.value
             ))
 
         if old_event.get(FIELD_STATUS) != new_event.get(FIELD_STATUS):
@@ -430,7 +408,6 @@ class CalendarSync:
                 field="Statut",
                 old_value=old_event.get(FIELD_STATUS),
                 new_value=new_event.get(FIELD_STATUS),
-                notification_type=NotificationType.INFORMATION.value
             ))
 
         if old_event.get(FIELD_START) != new_event.get(FIELD_START):
@@ -439,7 +416,6 @@ class CalendarSync:
                 field="Date/Heure de début",
                 old_value=old_event.get(FIELD_START),
                 new_value=new_event.get(FIELD_START),
-                notification_type=NotificationType.NOTIFICATION.value
             ))
 
         if old_event.get(FIELD_END) != new_event.get(FIELD_END):
@@ -448,7 +424,6 @@ class CalendarSync:
                 field="Date/Heure de fin",
                 old_value=old_event.get(FIELD_END),
                 new_value=new_event.get(FIELD_END),
-                notification_type=NotificationType.NOTIFICATION.value
             ))
 
         return changes
@@ -489,10 +464,9 @@ class CalendarSync:
                         'field': change.field,
                         'old_value': change.old_value,
                         'new_value': change.new_value,
-                        'notification_type': change.notification_type
                     })
             else:
-                # Nouvel événement (nécessite approbation)
+                # Nouvel événement
                 changes_list.append({
                     'uid': uid,
                     'event_title': new_event.get(FIELD_TITLE),
@@ -500,7 +474,6 @@ class CalendarSync:
                     'field': 'Nouvel événement',
                     'old_value': None,
                     'new_value': new_event.get(FIELD_START),
-                    'notification_type': NotificationType.NOTIFICATION.value
                 })
                 logger.info(f"Nouvel événement détecté: {uid}")
 
@@ -513,7 +486,6 @@ class CalendarSync:
                 'field': 'Événement supprimé',
                 'old_value': old_state[uid].get(FIELD_TITLE),
                 'new_value': None,
-                'notification_type': NotificationType.NOTIFICATION.value
             })
             logger.info(f"Événement supprimé détecté: {uid}")
 
@@ -572,25 +544,21 @@ class CalendarSync:
 # AFFICHAGE
 # =============================================================================
 
-def display_changes(changes: List[Dict]):
-    """Affiche les changements de manière lisible"""
+def display_changes(source_name: str, changes: List[Dict]):
+    """Affiche les changements d'une source de manière lisible"""
     if not changes:
-        print("\nAucun changement détecté")
+        print(f"\n  Aucun changement détecté")
         return
 
-    print(f"\n{'='*60}")
-    print(f"CHANGEMENTS DETECTES ({len(changes)})")
-    print(f"{'='*60}\n")
-
+    print(f"\n  {len(changes)} changement(s) :")
     for i, change in enumerate(changes, 1):
-        notif_type = change.get('notification_type', '').upper()
-        print(f"[{i}] [{notif_type}] {change['event_title']}")
-        print(f"    Type: {change['type']}")
-        print(f"    Champ: {change['field']}")
+        print(f"  [{i}] {change['event_title']}")
+        print(f"      Type: {change['type']}")
+        print(f"      Champ: {change['field']}")
         if change['old_value']:
-            print(f"    Ancien: {change['old_value']}")
+            print(f"      Ancien: {change['old_value']}")
         if change['new_value']:
-            print(f"    Nouveau: {change['new_value']}")
+            print(f"      Nouveau: {change['new_value']}")
         print()
 
 
@@ -602,11 +570,6 @@ def main():
     """Point d'entrée principal avec gestion des arguments CLI"""
     parser = argparse.ArgumentParser(
         description="Synchronisation de calendrier iCal multi-sources"
-    )
-    parser.add_argument(
-        '-s', '--source',
-        required=True,
-        help="Nom de la source à synchroniser (défini dans sources.json)"
     )
     parser.add_argument(
         '--config',
@@ -627,69 +590,95 @@ def main():
     args = parser.parse_args()
 
     try:
-        source = Source.load_config(args.source, args.config)
-
-        # Créer et exécuter la synchronisation
-        sync = CalendarSync(source=source, dry_run=args.dry_run)
-        result = sync.process()
-
-        # Construire et sauvegarder le fichier process
-        process_data = {
-            'source': source.name,
-            'timestamp': result['timestamp'],
-            'status': result['status'],
-            'events_count': result['events_count'],
-            'changes_count': len(result['changes']),
-            'config': {
-                'config_file': args.config,
-                'dry_run': args.dry_run,
-                'notification': args.notification,
-                'url': source.url,
-                'description': source.description,
-                'verify_ssl': source.verify_ssl,
-                'date_debut': source.date_filter.date_debut.strftime(DATE_FORMAT) if source.date_filter.date_debut else None,
-                'date_fin': source.date_filter.date_fin.strftime(DATE_FORMAT) if source.date_filter.date_fin else None,
-            }
-        }
-        if result['status'] == 'error':
-            process_data['error_type'] = result.get('error_type')
-            process_data['error_message'] = result.get('error_message')
-
-        process_file = save_process(process_data)
-
-        # Sauvegarder la notification si demandé
-        notification_file = None
-        if args.notification and result['changes']:
-            notification_file = save_notification(
-                source=source.name,
-                changes=result['changes']
-            )
-
-        # Afficher les changements
-        if result['status'] == 'success':
-            display_changes(result.get('changes', []))
-            print(f"\nFichiers:")
-            if not args.dry_run:
-                print(f"  - État: {source.state_file}")
-            else:
-                print(f"  - État: non modifié (dry-run)")
-            print(f"  - Processus: {process_file}")
-            if notification_file:
-                print(f"  - Notification: {notification_file}")
-        else:
-            print(f"\nERREUR: {result.get('error_type')}")
-            print(f"Message: {result.get('error_message')}")
-            print(f"  - Processus: {process_file}")
-
+        sources = Source.load_all_configs(args.config)
     except FileNotFoundError as e:
         logger.error(str(e))
         exit(1)
     except ValueError as e:
         logger.error(f"Erreur de configuration: {e}")
         exit(1)
-    except Exception as e:
-        logger.error(f"Erreur fatale: {e}")
+
+    if not sources:
+        logger.error("Aucune source trouvée dans la configuration")
         exit(1)
+
+    # Construire la config globale pour le fichier process
+    date_filter = DateFilter()
+    process_data = {
+        'timestamp': NOW.isoformat(),
+        'status': 'success',
+        'config': {
+            'config_file': args.config,
+            'dry_run': args.dry_run,
+            'notification': args.notification,
+            'date_debut': date_filter.date_debut.strftime(DATE_FORMAT) if date_filter.date_debut else None,
+            'date_fin': date_filter.date_fin.strftime(DATE_FORMAT) if date_filter.date_fin else None,
+        },
+        'sources': {}
+    }
+
+    notification_files = []
+
+    # Traiter chaque source
+    for source in sources:
+        print(f"\n{'='*60}")
+        print(f"SOURCE: {source.name}")
+        print(f"{'='*60}")
+
+        try:
+            sync = CalendarSync(source=source, dry_run=args.dry_run)
+            result = sync.process()
+
+            source_summary = {
+                'status': result['status'],
+                'events_count': result['events_count'],
+                'changes_count': len(result['changes']),
+            }
+            process_data['sources'][source.name] = source_summary
+
+            # Afficher les changements de cette source
+            display_changes(source.name, result.get('changes', []))
+
+            # Sauvegarder la notification si demandé
+            if args.notification and result['changes']:
+                notification_file = save_notification(
+                    source=source.name,
+                    changes=result['changes']
+                )
+                notification_files.append(notification_file)
+
+        except Exception as e:
+            logger.error(f"Erreur pour la source '{source.name}': {e}")
+            process_data['sources'][source.name] = {
+                'status': 'error',
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+            }
+            process_data['status'] = 'partial'
+            print(f"\n  ERREUR: {e}")
+
+    # Si toutes les sources sont en erreur, status global = error
+    statuses = [s['status'] for s in process_data['sources'].values()]
+    if all(s == 'error' for s in statuses):
+        process_data['status'] = 'error'
+
+    # Sauvegarder le fichier process global
+    process_file = save_process(process_data)
+
+    # Résumé final
+    print(f"\n{'='*60}")
+    print(f"RÉSUMÉ")
+    print(f"{'='*60}")
+    print(f"\nFichiers générés:")
+    for source in sources:
+        source_data = process_data['sources'].get(source.name, {})
+        if source_data.get('status') == 'success' and not args.dry_run:
+            print(f"  - État: {source.state_file}")
+    if args.dry_run:
+        print(f"  - État: non modifié (dry-run)")
+    print(f"  - Processus: {process_file}")
+    for nf in notification_files:
+        print(f"  - Notification: {nf}")
 
 
 if __name__ == "__main__":
