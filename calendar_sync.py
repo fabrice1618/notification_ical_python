@@ -84,9 +84,8 @@ class ChangeType(Enum):
     DESCRIPTION = "description_change"
     STATUS = "status_change"
     NEW_EVENT = "new_event"
+    MODIFIED_EVENT = "modified_event"
     DELETED_EVENT = "deleted_event"
-    CONNECTION_ERROR = "connection_error"
-    FORMAT_ERROR = "format_error"
 
 
 # =============================================================================
@@ -143,24 +142,16 @@ def lire_json(filepath: str) -> Optional[Dict]:
 
 
 def ecrire_json(filepath: str, data) -> str:
-    """Écrit des données dans un fichier JSON de manière atomique"""
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    temp_file = f"{filepath}.tmp"
-    try:
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(temp_file, filepath)
-    except Exception:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        raise
+    """Écrit des données dans un fichier JSON"""
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
     return filepath
 
 
 def save_notification(source: str, changes: List[Dict]):
     """Sauvegarde les changements dans un fichier notification horodaté."""
     timestamp = NOW.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(NOTIFICATIONS_DIR, f"{source}_{timestamp}.json")
+    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_notifications_{source}.json")
     ecrire_json(filepath, changes)
     logger.info(f"Notification sauvegardée: {filepath}")
     return filepath
@@ -169,7 +160,7 @@ def save_notification(source: str, changes: List[Dict]):
 def save_process(process_data: Dict):
     """Sauvegarde le compte-rendu du processus dans un fichier horodaté."""
     timestamp = NOW.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(NOTIFICATIONS_DIR, f"process_{timestamp}.json")
+    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_process.json")
     ecrire_json(filepath, process_data)
     logger.info(f"Processus sauvegardé: {filepath}")
     return filepath
@@ -446,48 +437,36 @@ class CalendarSync:
         Détecte tous les changements entre l'ancien et le nouvel état
 
         Returns:
-            Liste des changements détectés
+            Liste des changements détectés avec toutes les informations
         """
         changes_list = []
 
-        # Traiter les événements modifiés ou existants
         for uid, new_event in new_state.items():
             if uid in old_state:
                 old_event = old_state[uid]
                 changes = self.detect_changes(old_event, new_event)
 
-                for change in changes:
+                if changes:
                     changes_list.append({
-                        'uid': uid,
-                        'event_title': new_event.get(FIELD_TITLE),
-                        'type': change.type,
-                        'field': change.field,
-                        'old_value': change.old_value,
-                        'new_value': change.new_value,
+                        'type': ChangeType.MODIFIED_EVENT.value,
+                        'event': new_event,
+                        'previous': old_event,
+                        'changes': [change.to_dict() for change in changes],
                     })
+                    logger.info(f"Événement modifié: {uid}")
             else:
-                # Nouvel événement
                 changes_list.append({
-                    'uid': uid,
-                    'event_title': new_event.get(FIELD_TITLE),
                     'type': ChangeType.NEW_EVENT.value,
-                    'field': 'Nouvel événement',
-                    'old_value': None,
-                    'new_value': new_event.get(FIELD_START),
+                    'event': new_event,
                 })
-                logger.info(f"Nouvel événement détecté: {uid}")
+                logger.info(f"Nouvel événement: {uid}")
 
-        # Traiter les événements supprimés
         for uid in set(old_state.keys()) - set(new_state.keys()):
             changes_list.append({
-                'uid': uid,
-                'event_title': old_state[uid].get(FIELD_TITLE),
                 'type': ChangeType.DELETED_EVENT.value,
-                'field': 'Événement supprimé',
-                'old_value': old_state[uid].get(FIELD_TITLE),
-                'new_value': None,
+                'event': old_state[uid],
             })
-            logger.info(f"Événement supprimé détecté: {uid}")
+            logger.info(f"Événement supprimé: {uid}")
 
         return changes_list
 
@@ -551,14 +530,23 @@ def display_changes(source_name: str, changes: List[Dict]):
         return
 
     print(f"\n  {len(changes)} changement(s) :")
-    for i, change in enumerate(changes, 1):
-        print(f"  [{i}] {change['event_title']}")
-        print(f"      Type: {change['type']}")
-        print(f"      Champ: {change['field']}")
-        if change['old_value']:
-            print(f"      Ancien: {change['old_value']}")
-        if change['new_value']:
-            print(f"      Nouveau: {change['new_value']}")
+    for i, item in enumerate(changes, 1):
+        event = item['event']
+        change_type = item['type']
+        title = event.get(FIELD_TITLE, '(sans titre)')
+
+        if change_type == ChangeType.NEW_EVENT.value:
+            print(f"  [{i}] + {title}")
+            print(f"      Date: {event.get(FIELD_START)}")
+
+        elif change_type == ChangeType.MODIFIED_EVENT.value:
+            print(f"  [{i}] ~ {title}")
+            for ch in item.get('changes', []):
+                print(f"      {ch['field']}: {ch['old_value']} → {ch['new_value']}")
+
+        elif change_type == ChangeType.DELETED_EVENT.value:
+            print(f"  [{i}] - {title}")
+
         print()
 
 

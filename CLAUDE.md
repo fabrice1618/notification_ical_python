@@ -73,8 +73,8 @@ Key functions:
 | `sources_example.json` | Example configuration template |
 | `data/etat_{source}.json` | Validated calendar state for each source |
 | `data/calendar_sync.log` | Log file |
-| `notifications/process_{timestamp}.json` | Global process report (status, config, per-source results) |
-| `notifications/{source}_{timestamp}.json` | Change notifications (only with --notification) |
+| `notifications/{timestamp}_process.json` | Global process report (status, config, per-source results) |
+| `notifications/{timestamp}_notifications_{source}.json` | Change notifications (only with --notification) |
 
 ## Processing Flow
 
