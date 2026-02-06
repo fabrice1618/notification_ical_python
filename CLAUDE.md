@@ -25,24 +25,17 @@ python calendar_sync.py --config my_sources.json
 # Dry-run: detect changes without saving state
 python calendar_sync.py -d
 
-# With notification file generation
-python calendar_sync.py -n
-
-# Dry-run with notifications
-python calendar_sync.py -d -n
-
 # Explore available fields in calendars
 python explore_fields.py
 
 # Schedule via cron (hourly example)
-0 * * * * /usr/bin/python3 /path/to/calendar_sync.py -n >> /var/log/calendar_sync.log 2>&1
+0 * * * * /usr/bin/python3 /path/to/calendar_sync.py >> /var/log/calendar_sync.log 2>&1
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--config` | Config file path (default: sources.json) |
 | `-d`, `--dry-run` | Run without saving state (etat_{source}.json is not modified) |
-| `-n`, `--notification` | Generate notification files in notifications/ |
 
 ## Architecture
 
@@ -71,10 +64,9 @@ Key functions:
 |------|---------|
 | `sources.json` | Calendar sources configuration (user-specific, gitignored) |
 | `sources_example.json` | Example configuration template |
-| `data/etat_{source}.json` | Validated calendar state for each source |
+| `data/etat_{source}.json` | Validated calendar state for each source (dates in source format) |
 | `data/calendar_sync.log` | Log file |
-| `notifications/{timestamp}_process.json` | Global process report (status, config, per-source results) |
-| `notifications/{timestamp}_notifications_{source}.json` | Change notifications (only with --notification) |
+| `notifications/{timestamp}_calendar_sync.json` | Sync result with config, per-source status and changes |
 
 ## Processing Flow
 
@@ -87,9 +79,8 @@ Key functions:
    d. Filter by DATE_DEBUT/DATE_FIN (global constants in source code)
    e. Detect changes
    f. Update validated state (etat_{source}.json)  [skipped with --dry-run]
-   g. Save change notification                     [only with --notification]
-   h. On error: capture and continue to next source
-3. Save global process report (process_{timestamp}.json)
+   g. On error: capture and continue to next source
+3. Save result file ({timestamp}_calendar_sync.json)
 ```
 
 ## Date Filtering
@@ -102,6 +93,17 @@ DATE_FIN = "2026-06-30"
 ```
 
 These apply to all sources. Events outside this range are ignored.
+
+## Timezone and Date Display
+
+Dates are converted to local timezone and formatted for display:
+
+```python
+TIMEZONE = ZoneInfo("Europe/Paris")
+DISPLAY_DATE_FORMAT = "%d/%m/%Y %H:%M"
+```
+
+Output example: `15/03/2026 14:30`
 
 ## Source Configuration
 

@@ -11,7 +11,8 @@ from icalendar import Calendar, Component
 import json
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
 import os
 from urllib.parse import urlparse
 from typing import Dict, List, Optional
@@ -50,6 +51,10 @@ DATE_FORMAT = "%Y-%m-%d"
 # Plage de dates globale pour le filtrage des événements
 DATE_DEBUT = "2025-08-01"
 DATE_FIN = "2026-07-31"
+
+# Fuseau horaire et format d'affichage
+TIMEZONE = ZoneInfo("Europe/Paris")
+DISPLAY_DATE_FORMAT = "%d/%m/%Y %H:%M"
 
 # Horodatage unique pour tout le processus
 NOW = datetime.now()
@@ -141,6 +146,36 @@ def lire_json(filepath: str) -> Optional[Dict]:
         return json.loads(content)
 
 
+def format_datetime(dt) -> str:
+    """Convertit une date/datetime/ISO string en chaîne formatée dans le fuseau local"""
+    if isinstance(dt, str):
+        if 'T' in dt:
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        else:
+            return datetime.strptime(dt, DATE_FORMAT).strftime("%d/%m/%Y")
+
+    if isinstance(dt, date) and not isinstance(dt, datetime):
+        return dt.strftime("%d/%m/%Y")
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TIMEZONE)
+    else:
+        dt = dt.astimezone(TIMEZONE)
+
+    return dt.strftime(DISPLAY_DATE_FORMAT)
+
+
+def format_event_for_notification(event: Dict) -> Dict:
+    """Formate un événement avec les dates converties pour les notifications"""
+    return {
+        **event,
+        FIELD_START: format_datetime(event[FIELD_START]),
+        FIELD_END: format_datetime(event[FIELD_END]),
+        FIELD_LAST_MODIFIED: format_datetime(event[FIELD_LAST_MODIFIED]),
+        FIELD_DTSTAMP: format_datetime(event[FIELD_DTSTAMP]) if event.get(FIELD_DTSTAMP) else None,
+    }
+
+
 def ecrire_json(filepath: str, data) -> str:
     """Écrit des données dans un fichier JSON"""
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -148,21 +183,12 @@ def ecrire_json(filepath: str, data) -> str:
     return filepath
 
 
-def save_notification(source: str, changes: List[Dict]):
-    """Sauvegarde les changements dans un fichier notification horodaté."""
+def save_result(process_data: Dict):
+    """Sauvegarde le résultat de synchronisation dans un fichier horodaté."""
     timestamp = NOW.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_notifications_{source}.json")
-    ecrire_json(filepath, changes)
-    logger.info(f"Notification sauvegardée: {filepath}")
-    return filepath
-
-
-def save_process(process_data: Dict):
-    """Sauvegarde le compte-rendu du processus dans un fichier horodaté."""
-    timestamp = NOW.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_process.json")
+    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_calendar_sync.json")
     ecrire_json(filepath, process_data)
-    logger.info(f"Processus sauvegardé: {filepath}")
+    logger.info(f"Résultat sauvegardé: {filepath}")
     return filepath
 
 
@@ -330,6 +356,8 @@ class CalendarSource:
                 if not self.source.date_filter.is_in_range(start_iso):
                     continue
 
+                dtstamp = component.get('dtstamp')
+
                 event_data = {
                     FIELD_UID: uid,
                     FIELD_TITLE: str(component.get('summary', '') or ''),
@@ -338,7 +366,7 @@ class CalendarSource:
                     FIELD_END: component.get('dtend').dt.isoformat(),
                     FIELD_DESCRIPTION: str(component.get('description', '') or ''),
                     FIELD_LAST_MODIFIED: NOW.isoformat(),
-                    FIELD_DTSTAMP: component.get('dtstamp').dt.isoformat() if component.get('dtstamp') else None,
+                    FIELD_DTSTAMP: dtstamp.dt.isoformat() if dtstamp else None,
                     FIELD_STATUS: str(component.get('status', '') or '')
                 }
 
@@ -405,16 +433,16 @@ class CalendarSync:
             changes.append(Change(
                 type=ChangeType.START_TIME.value,
                 field="Date/Heure de début",
-                old_value=old_event.get(FIELD_START),
-                new_value=new_event.get(FIELD_START),
+                old_value=format_datetime(old_event.get(FIELD_START)),
+                new_value=format_datetime(new_event.get(FIELD_START)),
             ))
 
         if old_event.get(FIELD_END) != new_event.get(FIELD_END):
             changes.append(Change(
                 type=ChangeType.END_TIME.value,
                 field="Date/Heure de fin",
-                old_value=old_event.get(FIELD_END),
-                new_value=new_event.get(FIELD_END),
+                old_value=format_datetime(old_event.get(FIELD_END)),
+                new_value=format_datetime(new_event.get(FIELD_END)),
             ))
 
         return changes
@@ -437,7 +465,7 @@ class CalendarSync:
         Détecte tous les changements entre l'ancien et le nouvel état
 
         Returns:
-            Liste des changements détectés avec toutes les informations
+            Liste des changements détectés avec dates formatées pour notifications
         """
         changes_list = []
 
@@ -449,22 +477,22 @@ class CalendarSync:
                 if changes:
                     changes_list.append({
                         'type': ChangeType.MODIFIED_EVENT.value,
-                        'event': new_event,
-                        'previous': old_event,
+                        'event': format_event_for_notification(new_event),
+                        'previous': format_event_for_notification(old_event),
                         'changes': [change.to_dict() for change in changes],
                     })
                     logger.info(f"Événement modifié: {uid}")
             else:
                 changes_list.append({
                     'type': ChangeType.NEW_EVENT.value,
-                    'event': new_event,
+                    'event': format_event_for_notification(new_event),
                 })
                 logger.info(f"Nouvel événement: {uid}")
 
         for uid in set(old_state.keys()) - set(new_state.keys()):
             changes_list.append({
                 'type': ChangeType.DELETED_EVENT.value,
-                'event': old_state[uid],
+                'event': format_event_for_notification(old_state[uid]),
             })
             logger.info(f"Événement supprimé: {uid}")
 
@@ -569,11 +597,6 @@ def main():
         action='store_true',
         help="Exécuter sans sauvegarder l'état (pas de modification de etat_{source}.json)"
     )
-    parser.add_argument(
-        '-n', '--notification',
-        action='store_true',
-        help="Créer les fichiers de notifications dans le dossier notifications/"
-    )
 
     args = parser.parse_args()
 
@@ -590,22 +613,19 @@ def main():
         logger.error("Aucune source trouvée dans la configuration")
         exit(1)
 
-    # Construire la config globale pour le fichier process
+    # Construire la config globale pour le fichier résultat
     date_filter = DateFilter()
-    process_data = {
-        'timestamp': NOW.isoformat(),
+    result_data = {
+        'timestamp': NOW.strftime("%Y%m%d_%H%M%S"),
         'status': 'success',
         'config': {
             'config_file': args.config,
             'dry_run': args.dry_run,
-            'notification': args.notification,
             'date_debut': date_filter.date_debut.strftime(DATE_FORMAT) if date_filter.date_debut else None,
             'date_fin': date_filter.date_fin.strftime(DATE_FORMAT) if date_filter.date_fin else None,
         },
         'sources': {}
     }
-
-    notification_files = []
 
     # Traiter chaque source
     for source in sources:
@@ -617,41 +637,33 @@ def main():
             sync = CalendarSync(source=source, dry_run=args.dry_run)
             result = sync.process()
 
-            source_summary = {
+            result_data['sources'][source.name] = {
                 'status': result['status'],
                 'events_count': result['events_count'],
                 'changes_count': len(result['changes']),
+                'changes': result['changes'],
             }
-            process_data['sources'][source.name] = source_summary
 
             # Afficher les changements de cette source
             display_changes(source.name, result.get('changes', []))
 
-            # Sauvegarder la notification si demandé
-            if args.notification and result['changes']:
-                notification_file = save_notification(
-                    source=source.name,
-                    changes=result['changes']
-                )
-                notification_files.append(notification_file)
-
         except Exception as e:
             logger.error(f"Erreur pour la source '{source.name}': {e}")
-            process_data['sources'][source.name] = {
+            result_data['sources'][source.name] = {
                 'status': 'error',
                 'error_type': type(e).__name__,
                 'error_message': str(e),
             }
-            process_data['status'] = 'partial'
+            result_data['status'] = 'partial'
             print(f"\n  ERREUR: {e}")
 
     # Si toutes les sources sont en erreur, status global = error
-    statuses = [s['status'] for s in process_data['sources'].values()]
+    statuses = [s['status'] for s in result_data['sources'].values()]
     if all(s == 'error' for s in statuses):
-        process_data['status'] = 'error'
+        result_data['status'] = 'error'
 
-    # Sauvegarder le fichier process global
-    process_file = save_process(process_data)
+    # Sauvegarder le fichier résultat
+    result_file = save_result(result_data)
 
     # Résumé final
     print(f"\n{'='*60}")
@@ -659,14 +671,12 @@ def main():
     print(f"{'='*60}")
     print(f"\nFichiers générés:")
     for source in sources:
-        source_data = process_data['sources'].get(source.name, {})
+        source_data = result_data['sources'].get(source.name, {})
         if source_data.get('status') == 'success' and not args.dry_run:
             print(f"  - État: {source.state_file}")
     if args.dry_run:
         print(f"  - État: non modifié (dry-run)")
-    print(f"  - Processus: {process_file}")
-    for nf in notification_files:
-        print(f"  - Notification: {nf}")
+    print(f"  - Résultat: {result_file}")
 
 
 if __name__ == "__main__":
