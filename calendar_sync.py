@@ -42,7 +42,7 @@ MAX_RETRIES = 3
 # Fichiers et dossiers
 CONFIG_FILE = "sources.json"
 DATA_DIR = "data"
-NOTIFICATIONS_DIR = "notifications"
+DATA_SYNC_DIR = "data_sync"
 LOG_FILE = os.path.join(DATA_DIR, "calendar_sync.log")
 
 # Format de date pour la date limite
@@ -60,7 +60,7 @@ DISPLAY_DATE_FORMAT = "%d/%m/%Y %H:%M"
 NOW = datetime.now()
 
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(NOTIFICATIONS_DIR, exist_ok=True)
+os.makedirs(DATA_SYNC_DIR, exist_ok=True)
 
 # =============================================================================
 # CONFIGURATION DU LOGGING
@@ -186,7 +186,7 @@ def ecrire_json(filepath: str, data) -> str:
 def save_result(process_data: Dict):
     """Sauvegarde le résultat de synchronisation dans un fichier horodaté."""
     timestamp = NOW.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(NOTIFICATIONS_DIR, f"{timestamp}_calendar_sync.json")
+    filepath = os.path.join(DATA_SYNC_DIR, f"{timestamp}_calendar_sync.json")
     ecrire_json(filepath, process_data)
     logger.info(f"Résultat sauvegardé: {filepath}")
     return filepath
@@ -256,7 +256,6 @@ class Source:
         self.state_file = os.path.join(DATA_DIR, f"etat_{name}.json")
 
         if not verify_ssl:
-            logger.warning(f"Vérification SSL désactivée pour {name}")
             warnings.filterwarnings('ignore', category=InsecureRequestWarning)
 
     @classmethod
@@ -343,12 +342,10 @@ class CalendarSource:
                 uid = component.get('uid')
 
                 if not uid:
-                    logger.warning("Événement sans UID ignoré")
                     continue
 
                 uid = str(uid).strip()
                 if not uid:
-                    logger.warning("Événement avec UID vide ignoré")
                     continue
 
                 start_iso = component.get('dtstart').dt.isoformat()
@@ -372,7 +369,6 @@ class CalendarSource:
 
                 events[uid] = event_data
 
-        logger.info(f"{len(events)} événement(s) parsé(s)")
         return events
 
 
@@ -450,15 +446,11 @@ class CalendarSync:
     def load_state(self) -> Dict[str, Dict]:
         """Charge l'état depuis le fichier JSON"""
         state = lire_json(self.source.state_file)
-        if state is None:
-            logger.info(f"Fichier d'état inexistant ou vide: {self.source.state_file}")
-            return {}
-        return state
+        return state if state else {}
 
     def save_state(self, events: Dict[str, Dict]):
-        """Sauvegarde l'état dans le fichier JSON de manière atomique"""
+        """Sauvegarde l'état dans le fichier JSON"""
         ecrire_json(self.source.state_file, events)
-        logger.debug(f"État sauvegardé dans {self.source.state_file}")
 
     def detect_all_changes(self, old_state: Dict, new_state: Dict) -> List[Dict]:
         """
@@ -481,20 +473,17 @@ class CalendarSync:
                         'previous': format_event_for_notification(old_event),
                         'changes': [change.to_dict() for change in changes],
                     })
-                    logger.info(f"Événement modifié: {uid}")
             else:
                 changes_list.append({
                     'type': ChangeType.NEW_EVENT.value,
                     'event': format_event_for_notification(new_event),
                 })
-                logger.info(f"Nouvel événement: {uid}")
 
         for uid in set(old_state.keys()) - set(new_state.keys()):
             changes_list.append({
                 'type': ChangeType.DELETED_EVENT.value,
                 'event': format_event_for_notification(old_state[uid]),
             })
-            logger.info(f"Événement supprimé: {uid}")
 
         return changes_list
 
@@ -505,39 +494,19 @@ class CalendarSync:
         Returns:
             Dictionnaire avec les résultats de la synchronisation
         """
-        logger.info("=" * 60)
-        logger.info(f"SYNCHRONISATION - Source: {self.source.name}")
-        logger.info("=" * 60)
-
-        # Étape 1 : Charger l'état actuel (déjà filtré)
-        logger.info(f"Chargement de {self.source.state_file}...")
         old_state = self.load_state()
-        logger.info(f"{len(old_state)} événement(s) dans l'état actuel")
 
-        # Étape 2 : Télécharger, parser et filtrer le calendrier
         calendar_source = CalendarSource(self.source)
         calendar_source.fetch()
         new_state = calendar_source.events
 
-        # Étape 3 : Détecter les changements
-        logger.info("Détection des changements...")
         changes = self.detect_all_changes(old_state, new_state)
 
-        if changes:
-            logger.info(f"{len(changes)} changement(s) détecté(s)")
-        else:
-            logger.info("Aucun changement détecté")
-
-        # Étape 4 : Remplacer l'ancien état par le nouveau
-        if self.dry_run:
-            logger.info("Mode dry-run : état non sauvegardé")
-        else:
-            logger.info(f"Mise à jour de {self.source.state_file}...")
+        if not self.dry_run:
             self.save_state(new_state)
 
-        logger.info("=" * 60)
-        logger.info("SYNCHRONISATION TERMINÉE")
-        logger.info("=" * 60)
+        mode = " (dry-run)" if self.dry_run else ""
+        logger.info(f"Synchronisation source [{self.source.name}] events={len(new_state)}, changes={len(changes)}{mode}")
 
         return {
             'status': 'success',
@@ -545,38 +514,6 @@ class CalendarSync:
             'events_count': len(new_state),
             'changes': changes
         }
-
-
-# =============================================================================
-# AFFICHAGE
-# =============================================================================
-
-def display_changes(source_name: str, changes: List[Dict]):
-    """Affiche les changements d'une source de manière lisible"""
-    if not changes:
-        print(f"\n  Aucun changement détecté")
-        return
-
-    print(f"\n  {len(changes)} changement(s) :")
-    for i, item in enumerate(changes, 1):
-        event = item['event']
-        change_type = item['type']
-        title = event.get(FIELD_TITLE, '(sans titre)')
-
-        if change_type == ChangeType.NEW_EVENT.value:
-            print(f"  [{i}] + {title}")
-            print(f"      Date: {event.get(FIELD_START)}")
-
-        elif change_type == ChangeType.MODIFIED_EVENT.value:
-            print(f"  [{i}] ~ {title}")
-            for ch in item.get('changes', []):
-                print(f"      {ch['field']}: {ch['old_value']} → {ch['new_value']}")
-
-        elif change_type == ChangeType.DELETED_EVENT.value:
-            print(f"  [{i}] - {title}")
-
-        print()
-
 
 # =============================================================================
 # POINT D'ENTREE
@@ -629,10 +566,6 @@ def main():
 
     # Traiter chaque source
     for source in sources:
-        print(f"\n{'='*60}")
-        print(f"SOURCE: {source.name}")
-        print(f"{'='*60}")
-
         try:
             sync = CalendarSync(source=source, dry_run=args.dry_run)
             result = sync.process()
@@ -644,18 +577,14 @@ def main():
                 'changes': result['changes'],
             }
 
-            # Afficher les changements de cette source
-            display_changes(source.name, result.get('changes', []))
-
         except Exception as e:
-            logger.error(f"Erreur pour la source '{source.name}': {e}")
+            logger.error(f"Erreur source [{source.name}]: {e}")
             result_data['sources'][source.name] = {
                 'status': 'error',
                 'error_type': type(e).__name__,
                 'error_message': str(e),
             }
             result_data['status'] = 'partial'
-            print(f"\n  ERREUR: {e}")
 
     # Si toutes les sources sont en erreur, status global = error
     statuses = [s['status'] for s in result_data['sources'].values()]
@@ -663,20 +592,7 @@ def main():
         result_data['status'] = 'error'
 
     # Sauvegarder le fichier résultat
-    result_file = save_result(result_data)
-
-    # Résumé final
-    print(f"\n{'='*60}")
-    print(f"RÉSUMÉ")
-    print(f"{'='*60}")
-    print(f"\nFichiers générés:")
-    for source in sources:
-        source_data = result_data['sources'].get(source.name, {})
-        if source_data.get('status') == 'success' and not args.dry_run:
-            print(f"  - État: {source.state_file}")
-    if args.dry_run:
-        print(f"  - État: non modifié (dry-run)")
-    print(f"  - Résultat: {result_file}")
+    save_result(result_data)
 
 
 if __name__ == "__main__":

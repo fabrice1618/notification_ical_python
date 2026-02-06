@@ -25,6 +25,12 @@ python calendar_sync.py --config my_sources.json
 # Dry-run: detect changes without saving state
 python calendar_sync.py -d
 
+# Display latest sync result
+python print_calendar_sync.py
+
+# Display specific result file
+python print_calendar_sync.py -f notifications/20260206_053409_calendar_sync.json
+
 # Explore available fields in calendars
 python explore_fields.py
 
@@ -32,10 +38,18 @@ python explore_fields.py
 0 * * * * /usr/bin/python3 /path/to/calendar_sync.py >> /var/log/calendar_sync.log 2>&1
 ```
 
+### calendar_sync.py options
+
 | Option | Description |
 |--------|-------------|
 | `--config` | Config file path (default: sources.json) |
 | `-d`, `--dry-run` | Run without saving state (etat_{source}.json is not modified) |
+
+### print_calendar_sync.py options
+
+| Option | Description |
+|--------|-------------|
+| `-f`, `--file` | Result file to display (default: latest) |
 
 ## Architecture
 

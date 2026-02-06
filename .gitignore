@@ -7,7 +7,7 @@ __pycache__/
 # Data files (contain personal calendar data)
 sources.json
 data/
-notifications/
+data_sync/
 
 # IDE
 .vscode/
