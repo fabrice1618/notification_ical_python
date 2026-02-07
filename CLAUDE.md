@@ -45,6 +45,13 @@ python archive_google_calendar.py SOURCE -a ARCHIVE -d
 
 # Resume interrupted archive (skip duplicates)
 python archive_google_calendar.py SOURCE -a ARCHIVE -r
+
+# Google Calendar CRUD operations
+python google_calendar_crud.py list
+python google_calendar_crud.py show EVENT_ID
+python google_calendar_crud.py create -s "Meeting" --start 2026-03-15T14:00 --end 2026-03-15T15:00
+python google_calendar_crud.py update EVENT_ID --color tomato -l "Room A"
+python google_calendar_crud.py delete EVENT_ID -y
 ```
 
 ### calendar_sync.py options
@@ -68,6 +75,96 @@ python archive_google_calendar.py SOURCE -a ARCHIVE -r
 | `-a`, `--archive` | Name or ID of destination archive calendar (required) |
 | `-d`, `--dry-run` | Simulate without making changes |
 | `-r`, `--resume` | Resume interrupted archive (skip events already present) |
+
+### google_calendar_crud.py
+
+CLI for CRUD operations on Google Calendar events.
+
+#### Commands
+
+| Command | Description |
+|---------|-------------|
+| `list` | List events |
+| `show` | Show event details |
+| `create` | Create an event |
+| `update` | Update an event |
+| `delete` | Delete an event |
+
+#### list options
+
+| Option | Description |
+|--------|-------------|
+| `-c`, `--calendar` | Calendar name or ID (default: primary) |
+| `--from` | Start date (YYYY-MM-DD) |
+| `--to` | End date (YYYY-MM-DD) |
+| `-q`, `--query` | Search text |
+| `-n`, `--max-results` | Maximum number of events |
+| `--json` | Output as JSON |
+
+#### create options
+
+| Option | Description |
+|--------|-------------|
+| `-s`, `--summary` | Event title (required) |
+| `--start` | Start date/time (required) |
+| `--end` | End date/time (required) |
+| `-c`, `--calendar` | Calendar name or ID (default: primary) |
+| `-l`, `--location` | Location |
+| `-d`, `--description` | Description |
+| `--color` | Color (name or 1-11) |
+| `--all-day` | All-day event |
+| `--timezone` | Timezone (default: Europe/Paris) |
+| `--recurrence` | Recurrence rule (RRULE) |
+| `--visibility` | public/private/confidential |
+| `--transparency` | opaque/transparent |
+| `--reminder` | Reminder in minutes (repeatable) |
+| `--attendee` | Attendee email (repeatable) |
+| `--json` | Output as JSON |
+
+#### update options
+
+| Option | Description |
+|--------|-------------|
+| `event_id` | Event ID (required) |
+| `-c`, `--calendar` | Calendar name or ID |
+| `-s`, `--summary` | Event title |
+| `--start`, `--end` | Date/time |
+| `-l`, `--location` | Location |
+| `-d`, `--description` | Description |
+| `--color` | Color (name or 1-11) |
+| `--status` | confirmed/tentative/cancelled |
+| `--visibility` | public/private/confidential |
+| `--transparency` | opaque/transparent |
+| `--add-reminder` | Add reminder in minutes |
+| `--remove-reminders` | Remove all custom reminders |
+| `--add-attendee` | Add attendee email |
+| `--remove-attendee` | Remove attendee email |
+| `--json` | Output as JSON |
+
+#### delete options
+
+| Option | Description |
+|--------|-------------|
+| `event_id` | Event ID (required) |
+| `-c`, `--calendar` | Calendar name or ID |
+| `-y`, `--yes` | Skip confirmation |
+| `--send-updates` | Send cancellation (all/externalOnly/none) |
+
+#### Available colors
+
+| ID | Name |
+|----|------|
+| 1 | lavender |
+| 2 | sage |
+| 3 | grape |
+| 4 | flamingo |
+| 5 | banana |
+| 6 | tangerine |
+| 7 | peacock |
+| 8 | graphite |
+| 9 | blueberry |
+| 10 | basil |
+| 11 | tomato |
 
 ## Architecture
 
