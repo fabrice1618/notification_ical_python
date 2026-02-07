@@ -49,7 +49,7 @@ LOG_FILE = os.path.join(DATA_DIR, "calendar_sync.log")
 DATE_FORMAT = "%Y-%m-%d"
 
 # Plage de dates globale pour le filtrage des événements
-DATE_DEBUT = "2025-08-01"
+DATE_DEBUT = "2025-09-01"
 DATE_FIN = "2026-07-31"
 
 # Fuseau horaire et format d'affichage
