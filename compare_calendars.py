@@ -13,12 +13,6 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-# Shortcuts for common comparisons
-SHORTCUTS = {
-    "irup": ("data/etat_irup.json", "data/etat_google_irup.json"),
-    "cfai": ("data/etat_cfai.json", "data/etat_google_cfai.json"),
-}
-
 TIMEZONE = ZoneInfo("Europe/Paris")
 
 
@@ -360,25 +354,11 @@ def main():
     # Positional arguments for files
     parser.add_argument(
         "ref_file",
-        nargs="?",
-        help="Reference calendar file (e.g., data/etat_irup.json)"
+        help="Reference calendar file (e.g., data/etat_source.json)"
     )
     parser.add_argument(
         "prop_file",
-        nargs="?",
-        help="Proposition calendar file (e.g., data/etat_google_irup.json)"
-    )
-
-    # Shortcuts
-    parser.add_argument(
-        "--irup",
-        action="store_true",
-        help="Compare IRUP calendars (shortcut)"
-    )
-    parser.add_argument(
-        "--cfai",
-        action="store_true",
-        help="Compare CFAI calendars (shortcut)"
+        help="Proposition calendar file (e.g., data/etat_google_source.json)"
     )
 
     # Options
@@ -405,17 +385,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine files to compare
-    if args.irup:
-        ref_file, prop_file = SHORTCUTS["irup"]
-    elif args.cfai:
-        ref_file, prop_file = SHORTCUTS["cfai"]
-    elif args.ref_file and args.prop_file:
-        ref_file = args.ref_file
-        prop_file = args.prop_file
-    else:
+    # Validate required arguments
+    if not args.ref_file or not args.prop_file:
         parser.print_help()
         sys.exit(1)
+
+    ref_file = args.ref_file
+    prop_file = args.prop_file
 
     # Parse date filters
     date_from = parse_date(args.date_from) if args.date_from else None
