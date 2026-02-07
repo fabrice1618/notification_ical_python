@@ -126,7 +126,47 @@ def display_events(service, cal_id):
         print(f"      {date_display} | {title}{loc_str}")
 
 
-def list_calendars(show_stats=False, show_events=False, calendar_filter=None):
+def get_first_event_date(service, cal_id):
+    """Récupère la date du premier événement d'un calendrier (format ISO pour tri)."""
+    result = service.events().list(
+        calendarId=cal_id,
+        singleEvents=True,
+        orderBy='startTime',
+        maxResults=1
+    ).execute()
+
+    events = result.get('items', [])
+    if not events:
+        return None
+
+    start = events[0].get('start', {})
+    return start.get('dateTime', start.get('date', ''))
+
+
+def display_calendar(service, cal, show_stats, show_events):
+    """Affiche les informations d'un calendrier."""
+    cal_id = cal.get('id', '')
+    name = cal.get('summary', '(sans nom)')
+    access_role = cal.get('accessRole', '')
+    primary = " [Principal]" if cal.get('primary') else ""
+
+    print(f"  {name}{primary}")
+    print(f"    ID: {cal_id}")
+    print(f"    Accès: {access_role}")
+
+    if show_stats:
+        event_count, first, last = get_calendar_stats(service, cal_id)
+        print(f"    Événements: {event_count}")
+        if first and last:
+            print(f"    Période: {first} → {last}")
+
+    if show_events:
+        display_events(service, cal_id)
+
+    print()
+
+
+def list_calendars(show_stats=False, show_events=False, calendar_filter=None, sort_by_first=False):
     """Liste tous les calendriers visibles (hors exclusions)."""
     config = load_config()
     exclude_ids = config.get('exclude_calendar', [])
@@ -134,10 +174,10 @@ def list_calendars(show_stats=False, show_events=False, calendar_filter=None):
     creds = get_credentials()
     service = build('calendar', 'v3', credentials=creds)
 
-    print("Calendriers Google visibles :\n")
-
     calendars = service.calendarList().list().execute()
 
+    # Filtrer les calendriers
+    filtered_cals = []
     for cal in calendars.get('items', []):
         cal_id = cal.get('id', '')
         name = cal.get('summary', '(sans nom)')
@@ -145,28 +185,27 @@ def list_calendars(show_stats=False, show_events=False, calendar_filter=None):
         if cal_id in exclude_ids:
             continue
 
-        # Filtre par ID ou nom si spécifié
         if calendar_filter:
             if calendar_filter not in cal_id and calendar_filter.lower() not in name.lower():
                 continue
 
-        access_role = cal.get('accessRole', '')
-        primary = " [Principal]" if cal.get('primary') else ""
+        filtered_cals.append(cal)
 
-        print(f"  {name}{primary}")
-        print(f"    ID: {cal_id}")
-        print(f"    Accès: {access_role}")
+    # Trier par premier événement si demandé
+    if sort_by_first:
+        print("Récupération des dates de premier événement...")
+        for cal in filtered_cals:
+            cal['_first_event'] = get_first_event_date(service, cal['id'])
 
-        if show_stats:
-            count, first, last = get_calendar_stats(service, cal_id)
-            print(f"    Événements: {count}")
-            if first and last:
-                print(f"    Période: {first} → {last}")
-
-        if show_events:
-            display_events(service, cal_id)
-
+        # Trier: calendriers avec événements d'abord (par date), puis sans événements
+        filtered_cals.sort(key=lambda c: (c['_first_event'] is None, c['_first_event'] or ''))
         print()
+
+    # Afficher les calendriers
+    for cal in filtered_cals:
+        display_calendar(service, cal, show_stats, show_events)
+
+    print(f"Total: {len(filtered_cals)} calendrier(s)")
 
 
 def main():
@@ -184,12 +223,22 @@ def main():
         help="Lister les événements"
     )
     parser.add_argument(
+        '-t', '--tri',
+        action='store_true',
+        help="Trier par date du premier événement"
+    )
+    parser.add_argument(
         '-c', '--calendar',
         help="Filtrer par ID ou nom de calendrier"
     )
 
     args = parser.parse_args()
-    list_calendars(show_stats=args.stat, show_events=args.events, calendar_filter=args.calendar)
+    list_calendars(
+        show_stats=args.stat,
+        show_events=args.events,
+        calendar_filter=args.calendar,
+        sort_by_first=args.tri
+    )
 
 
 if __name__ == "__main__":

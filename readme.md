@@ -84,8 +84,10 @@ python print_calendar_sync.py -f data_sync/20260206_080000_calendar_sync.json
 
 ```
 projet/
-├── calendar_sync.py          # Script principal
+├── calendar_sync.py          # Script principal de synchronisation iCal
 ├── print_calendar_sync.py    # Affichage des résultats
+├── archive_google_calendar.py # Archivage de calendriers Google
+├── list_google_calendars.py  # Liste les calendriers Google
 ├── sources.json              # Configuration des sources (gitignored)
 ├── sources_example.json      # Exemple de configuration
 ├── data/
@@ -214,6 +216,48 @@ Période: 2025-08-01 → 2026-07-31
 
 [ecole] 54 événements, 0 changements
 ```
+
+## Archivage Google Calendar
+
+Le script `archive_google_calendar.py` permet de transférer tous les événements d'un calendrier Google vers un calendrier archive, puis de supprimer le calendrier source.
+
+### Prérequis
+
+```bash
+pip install google-auth-oauthlib google-api-python-client
+```
+
+Nécessite un fichier `credentials.json` (OAuth 2.0) depuis la [Google Cloud Console](https://console.cloud.google.com/).
+
+### Utilisation
+
+```bash
+# Archiver un calendrier
+python archive_google_calendar.py "Mon Calendrier" -a "Archives"
+
+# Mode simulation (dry-run)
+python archive_google_calendar.py "Mon Calendrier" -a "Archives" -d
+
+# Reprendre un archivage interrompu (ignore les doublons)
+python archive_google_calendar.py "Mon Calendrier" -a "Archives" -r
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `source` | Nom ou ID du calendrier à archiver |
+| `-a`, `--archive` | Nom ou ID du calendrier archive destination (obligatoire) |
+| `-d`, `--dry-run` | Simuler sans effectuer de modifications |
+| `-r`, `--resume` | Reprendre un archivage interrompu (ignore les événements déjà présents) |
+
+### Fonctionnement
+
+1. Transfère tous les événements vers le calendrier archive
+2. Si aucune erreur : supprime le calendrier source
+3. Affiche un résumé : `Transférés: X, Ignorés: Y, Erreurs: Z`
+
+L'option `-r` (resume) permet de reprendre un archivage interrompu sans créer de doublons. Elle compare les événements par titre + date début + date fin.
 
 ## Configuration Google Calendar
 

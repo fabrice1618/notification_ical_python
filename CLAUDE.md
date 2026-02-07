@@ -36,6 +36,15 @@ python explore_fields.py
 
 # Schedule via cron (hourly example)
 0 * * * * /usr/bin/python3 /path/to/calendar_sync.py >> /var/log/calendar_sync.log 2>&1
+
+# Archive a Google Calendar to another calendar
+python archive_google_calendar.py SOURCE -a ARCHIVE
+
+# Archive with dry-run (no modifications)
+python archive_google_calendar.py SOURCE -a ARCHIVE -d
+
+# Resume interrupted archive (skip duplicates)
+python archive_google_calendar.py SOURCE -a ARCHIVE -r
 ```
 
 ### calendar_sync.py options
@@ -50,6 +59,15 @@ python explore_fields.py
 | Option | Description |
 |--------|-------------|
 | `-f`, `--file` | Result file to display (default: latest) |
+
+### archive_google_calendar.py options
+
+| Option | Description |
+|--------|-------------|
+| `source` | Name or ID of calendar to archive |
+| `-a`, `--archive` | Name or ID of destination archive calendar (required) |
+| `-d`, `--dry-run` | Simulate without making changes |
+| `-r`, `--resume` | Resume interrupted archive (skip events already present) |
 
 ## Architecture
 
