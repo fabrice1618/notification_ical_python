@@ -239,14 +239,15 @@ Custom mapping via JSON file (see `class_colors_example.json`).
 
 The system follows a pipeline pattern:
 
-1. `Source` - Calendar source configuration (URL, SSL) with `load_all_configs()` factory
-2. `DateFilter` - Filters events by global date range `[DATE_DEBUT, DATE_FIN]` (constants in source code)
+1. `Source` - Calendar source configuration (URL, SSL, dates, comparison) with `load_all_configs()` factory
+2. `DateFilter` - Filters events by per-source date range `[date_debut, date_fin]`
 3. `CalendarSource` - Downloads, parses and filters iCal events via `fetch()`
 4. `CalendarSync` - Main orchestrator: change detection, state management, sync process
+5. `compare_calendars()` - Automatic post-sync comparison between paired sources
 
 Key data classes:
 - `Source` - Source configuration from `sources.json` via `load_all_configs(config_file)`, owns a `DateFilter`
-- `DateFilter` - Global date range filter using `DATE_DEBUT`/`DATE_FIN` constants
+- `DateFilter` - Per-source date range filter (optional, no filtering if absent)
 - `CalendarSource` - Calendar downloader/parser with `events` dict
 - `Event` - Calendar event representation with `to_dict()` and `from_dict()`
 - `Change` - Single detected modification
@@ -275,11 +276,15 @@ Key functions:
    a. Load current state (etat_{source}.json)
    b. Download iCal calendar
    c. Parse events
-   d. Filter by DATE_DEBUT/DATE_FIN (global constants in source code)
+   d. Filter by per-source date_debut/date_fin (if configured)
    e. Detect changes
    f. Update validated state (etat_{source}.json)  [skipped with --dry-run]
    g. On error: capture and continue to next source
-3. Save result file ({timestamp}_calendar_sync.json)
+3. For each source with compare_with:
+   a. Verify both sources succeeded
+   b. Run compare_calendars() with reference source dates
+   c. Store comparison results (matches, modified, missing, extra)
+4. Save result file ({timestamp}_calendar_sync.json)
 ```
 
 ## Result File Format
@@ -292,15 +297,15 @@ The file `{timestamp}_calendar_sync.json` contains all sync results:
   "status": "success",
   "config": {
     "config_file": "sources.json",
-    "dry_run": false,
-    "date_debut": "2025-08-01",
-    "date_fin": "2026-07-31"
+    "dry_run": false
   },
   "sources": {
     "source_name": {
       "status": "success",
       "events_count": 200,
       "changes_count": 3,
+      "date_debut": "2025-09-01",
+      "date_fin": "2026-07-31",
       "changes": [
         {
           "type": "new_event",
@@ -335,6 +340,18 @@ The file `{timestamp}_calendar_sync.json` contains all sync results:
         }
       ]
     }
+  },
+  "comparisons": {
+    "cours_vs_google_cours": {
+      "ref_source": "cours",
+      "prop_source": "google_cours",
+      "status": "success",
+      "matches_count": 150,
+      "modified_count": 5,
+      "missing_count": 3,
+      "extra_count": 2,
+      "details": { "...": "full compare_calendars() output" }
+    }
   }
 }
 ```
@@ -361,17 +378,6 @@ The file `{timestamp}_calendar_sync.json` contains all sync results:
 | `partial` | Some sources failed, others succeeded |
 | `error` | All sources failed |
 
-## Date Filtering
-
-Date filtering is configured globally via constants in `calendar_sync.py`:
-
-```python
-DATE_DEBUT = "2025-08-01"
-DATE_FIN = "2026-07-31"
-```
-
-These apply to all sources. Events outside this range are ignored.
-
 ## Timezone and Date Display
 
 Dates in result files are converted to local timezone and formatted for display:
@@ -389,10 +395,18 @@ State files (`etat_{source}.json`) keep dates in original ISO format for accurat
 
 ```json
 {
-  "source_name": {
+  "cours": {
     "url": "webcal://example.com/calendar.ics",
-    "description": "Description",
-    "verify_ssl": true
+    "description": "Calendrier des cours",
+    "date_debut": "2025-09-01",
+    "date_fin": "2026-07-31"
+  },
+  "google_cours": {
+    "url": "https://calendar.google.com/calendar/ical/xxx/basic.ics",
+    "description": "Copie Google du calendrier des cours",
+    "date_debut": "2025-09-01",
+    "date_fin": "2026-07-31",
+    "compare_with": "cours"
   }
 }
 ```
@@ -402,3 +416,15 @@ State files (`etat_{source}.json`) keep dates in original ISO format for accurat
 | `url` | Yes | iCal URL (webcal:// or https://) |
 | `description` | No | Source description |
 | `verify_ssl` | No | Verify SSL certificate (default: true) |
+| `date_debut` | No | Start date for event filtering (YYYY-MM-DD). If absent, no lower bound |
+| `date_fin` | No | End date for event filtering (YYYY-MM-DD). If absent, no upper bound |
+| `compare_with` | No | Name of reference source to compare against after sync. The source declaring `compare_with` is the "proposition", the referenced source is the "reference" |
+
+### Automatic Comparison
+
+When a source has `compare_with` set, after all sources are synced, `compare_calendars()` is called automatically using the state files of both sources. The reference source's date range is used for filtering. Results are stored in the `comparisons` section of the result file.
+
+Comparison statuses:
+- `success`: comparison completed
+- `skipped`: one or both sources failed during sync
+- `error`: comparison itself failed

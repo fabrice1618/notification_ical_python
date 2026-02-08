@@ -1,11 +1,20 @@
 {
   "cours": {
     "url": "webcal://example.com/calendar.ics",
-    "description": "Calendrier des cours"
+    "description": "Calendrier des cours",
+    "date_debut": "2025-09-01",
+    "date_fin": "2026-07-31"
   },
   "ecole": {
     "url": "https://serveur-ecole.fr/calendar.ics",
     "description": "Calendrier avec certificat SSL non vérifié",
     "verify_ssl": false
+  },
+  "google_cours": {
+    "url": "https://calendar.google.com/calendar/ical/xxx/basic.ics",
+    "description": "Copie Google du calendrier des cours",
+    "date_debut": "2025-09-01",
+    "date_fin": "2026-07-31",
+    "compare_with": "cours"
   }
 }

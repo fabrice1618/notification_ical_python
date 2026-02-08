@@ -76,12 +76,60 @@ def display_changes(changes: list):
             print(f"    - {start} | {title}")
 
 
+def display_comparison_event(item: dict, prefix: str):
+    """Affiche un événement de comparaison (modified/missing/extra)"""
+    event = item.get('event', {})
+    title = event.get('title', '(sans titre)')
+    start = event.get('start', '')
+    location = event.get('location', '')
+    loc_str = f" @ {location}" if location else ""
+    print(f"{prefix}{start} | {title}{loc_str}")
+
+
+def display_comparison_details(details: dict):
+    """Affiche le détail des différences d'une comparaison"""
+    modified = details.get('modified', [])
+    missing = details.get('missing', [])
+    extra = details.get('extra', [])
+
+    if not modified and not missing and not extra:
+        return
+
+    if modified:
+        print(f"\n    DIFFÉRENCES ({len(modified)})")
+        for item in modified:
+            ref = item.get('ref_event', {})
+            prop = item.get('prop_event', {})
+            start = item.get('start', '')
+            ref_title = ref.get('title', '(sans titre)')
+            ref_loc = ref.get('location', '')
+            prop_title = prop.get('title', '(sans titre)')
+            prop_loc = prop.get('location', '')
+            print(f"      ~ {start} |")
+            print(f"          Réf:  {ref_title} @ {ref_loc}")
+            print(f"          Prop: {prop_title} @ {prop_loc}")
+            for diff in item.get('differences', []):
+                field = diff.get('field', '')
+                ref_val = diff.get('ref', '')
+                prop_val = diff.get('prop', '')
+                print(f"          {field}: {ref_val} → {prop_val}")
+
+    if missing:
+        print(f"\n    MANQUANTS ({len(missing)})")
+        for item in missing:
+            display_comparison_event(item, "      - ")
+
+    if extra:
+        print(f"\n    EXTRA ({len(extra)})")
+        for item in extra:
+            display_comparison_event(item, "      + ")
+
+
 def display_result(data: dict, filepath: str):
     """Affiche le résultat complet"""
     config = data.get('config', {})
 
     print(f"\nFichier: {os.path.basename(filepath)}")
-    print(f"Période: {config.get('date_debut')} → {config.get('date_fin')}")
     if config.get('dry_run'):
         print(f"Mode: dry-run")
 
@@ -91,10 +139,35 @@ def display_result(data: dict, filepath: str):
 
         print(f"\n[{source_name}] {events} événements, {changes} changements")
 
+        date_debut = source_data.get('date_debut')
+        date_fin = source_data.get('date_fin')
+        if date_debut or date_fin:
+            print(f"  Période: {date_debut or '...'} → {date_fin or '...'}")
+
         if source_data.get('status') == 'error':
             print(f"  ERREUR: {source_data.get('error_type')}: {source_data.get('error_message')}")
         elif changes > 0:
             display_changes(source_data.get('changes', []))
+
+    # Section comparaisons
+    comparisons = data.get('comparisons', {})
+    if comparisons:
+        print(f"\n{'='*50}")
+        print("COMPARAISONS")
+        for comp_name, comp in comparisons.items():
+            print(f"\n  [{comp['ref_source']} vs {comp['prop_source']}]")
+            if comp['status'] == 'error':
+                print(f"    ERREUR: {comp.get('error_message')}")
+            elif comp['status'] == 'skipped':
+                print(f"    IGNORÉ: {comp.get('reason')}")
+            else:
+                total = comp['matches_count'] + comp['modified_count'] + comp['missing_count']
+                pct = (comp['matches_count'] / total * 100) if total > 0 else 0
+                print(f"    Correspondances: {comp['matches_count']}/{total} ({pct:.0f}%)")
+                print(f"    Différences: {comp['modified_count']}")
+                print(f"    Manquants: {comp['missing_count']}")
+                print(f"    Extra: {comp['extra_count']}")
+                display_comparison_details(comp.get('details', {}))
 
 
 def main():

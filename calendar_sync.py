@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
 import warnings
+from compare_calendars import compare_calendars
 
 # =============================================================================
 # CONSTANTES DE CONFIGURATION
@@ -47,10 +48,6 @@ LOG_FILE = os.path.join(DATA_DIR, "calendar_sync.log")
 
 # Format de date pour la date limite
 DATE_FORMAT = "%Y-%m-%d"
-
-# Plage de dates globale pour le filtrage des événements
-DATE_DEBUT = "2025-09-01"
-DATE_FIN = "2026-07-31"
 
 # Fuseau horaire et format d'affichage
 TIMEZONE = ZoneInfo("Europe/Paris")
@@ -197,11 +194,11 @@ def save_result(process_data: Dict):
 # =============================================================================
 
 class DateFilter:
-    """Filtre les événements selon la plage de dates globale [DATE_DEBUT, DATE_FIN]"""
+    """Filtre les événements selon une plage de dates [date_debut, date_fin]"""
 
-    def __init__(self):
-        self.date_debut = self._parse_date(DATE_DEBUT, "DATE_DEBUT")
-        self.date_fin = self._parse_date(DATE_FIN, "DATE_FIN")
+    def __init__(self, date_debut: Optional[str] = None, date_fin: Optional[str] = None):
+        self.date_debut = self._parse_date(date_debut, "date_debut")
+        self.date_fin = self._parse_date(date_fin, "date_fin")
 
     @staticmethod
     def _parse_date(date_str: Optional[str], field_name: str) -> Optional[datetime]:
@@ -240,19 +237,27 @@ class DateFilter:
 class Source:
     """Représente une source de calendrier configurée dans sources.json"""
 
-    def __init__(self, name: str, url: str, description: str = '', verify_ssl: bool = True):
+    def __init__(self, name: str, url: str, description: str = '', verify_ssl: bool = True,
+                 date_debut: Optional[str] = None, date_fin: Optional[str] = None,
+                 compare_with: Optional[str] = None):
         """
         Args:
             name: Nom de la source (clé dans sources.json)
             url: URL du calendrier iCal (webcal:// ou https://)
             description: Description de la source
             verify_ssl: Vérifier le certificat SSL (défaut: True)
+            date_debut: Date de début du filtrage (YYYY-MM-DD), optionnel
+            date_fin: Date de fin du filtrage (YYYY-MM-DD), optionnel
+            compare_with: Nom de la source de référence pour comparaison, optionnel
         """
         self.name = name
         self.url = self._validate_and_normalize_url(url)
         self.description = description
-        self.date_filter = DateFilter()
+        self.date_filter = DateFilter(date_debut=date_debut, date_fin=date_fin)
         self.verify_ssl = verify_ssl
+        self.date_debut = date_debut
+        self.date_fin = date_fin
+        self.compare_with = compare_with
         self.state_file = os.path.join(DATA_DIR, f"etat_{name}.json")
 
         if not verify_ssl:
@@ -270,7 +275,10 @@ class Source:
                 name=name,
                 url=config['url'],
                 description=config.get('description', ''),
-                verify_ssl=config.get('verify_ssl', True)
+                verify_ssl=config.get('verify_ssl', True),
+                date_debut=config.get('date_debut'),
+                date_fin=config.get('date_fin'),
+                compare_with=config.get('compare_with'),
             )
             for name, config in sources.items()
         ]
@@ -551,31 +559,36 @@ def main():
         exit(1)
 
     # Construire la config globale pour le fichier résultat
-    date_filter = DateFilter()
     result_data = {
         'timestamp': NOW.strftime("%Y%m%d_%H%M%S"),
         'status': 'success',
         'config': {
             'config_file': args.config,
             'dry_run': args.dry_run,
-            'date_debut': date_filter.date_debut.strftime(DATE_FORMAT) if date_filter.date_debut else None,
-            'date_fin': date_filter.date_fin.strftime(DATE_FORMAT) if date_filter.date_fin else None,
         },
         'sources': {}
     }
 
     # Traiter chaque source
+    sources_by_name = {source.name: source for source in sources}
+
     for source in sources:
         try:
             sync = CalendarSync(source=source, dry_run=args.dry_run)
             result = sync.process()
 
-            result_data['sources'][source.name] = {
+            source_result = {
                 'status': result['status'],
                 'events_count': result['events_count'],
                 'changes_count': len(result['changes']),
                 'changes': result['changes'],
             }
+            if source.date_debut:
+                source_result['date_debut'] = source.date_debut
+            if source.date_fin:
+                source_result['date_fin'] = source.date_fin
+
+            result_data['sources'][source.name] = source_result
 
         except Exception as e:
             logger.error(f"Erreur source [{source.name}]: {e}")
@@ -590,6 +603,91 @@ def main():
     statuses = [s['status'] for s in result_data['sources'].values()]
     if all(s == 'error' for s in statuses):
         result_data['status'] = 'error'
+
+    # Phase de comparaison automatique
+    comparisons = {}
+    for source in sources:
+        if not source.compare_with:
+            continue
+        if source.compare_with not in sources_by_name:
+            logger.warning(f"Source de comparaison '{source.compare_with}' introuvable pour [{source.name}]")
+            continue
+
+        ref_source = sources_by_name[source.compare_with]
+        comp_key = f"{ref_source.name}_vs_{source.name}"
+
+        # Vérifier que les deux sources ont réussi
+        ref_status = result_data['sources'].get(ref_source.name, {}).get('status')
+        prop_status = result_data['sources'].get(source.name, {}).get('status')
+
+        if ref_status != 'success' or prop_status != 'success':
+            reason_parts = []
+            if ref_status != 'success':
+                reason_parts.append(f"{ref_source.name}: {ref_status}")
+            if prop_status != 'success':
+                reason_parts.append(f"{source.name}: {prop_status}")
+            comparisons[comp_key] = {
+                'ref_source': ref_source.name,
+                'prop_source': source.name,
+                'status': 'skipped',
+                'reason': f"Source(s) en erreur: {', '.join(reason_parts)}",
+            }
+            logger.info(f"Comparaison [{comp_key}] ignorée: source(s) en erreur")
+            continue
+
+        try:
+            # Utiliser les dates de la source de référence pour le filtrage
+            date_from = datetime.strptime(ref_source.date_debut, DATE_FORMAT) if ref_source.date_debut else None
+            date_to = datetime.strptime(ref_source.date_fin, DATE_FORMAT) if ref_source.date_fin else None
+
+            comp_results = compare_calendars(
+                ref_source.state_file,
+                source.state_file,
+                date_from,
+                date_to,
+            )
+
+            comparisons[comp_key] = {
+                'ref_source': ref_source.name,
+                'prop_source': source.name,
+                'status': 'success',
+                'matches_count': len(comp_results['matches']),
+                'modified_count': len(comp_results['modified']),
+                'missing_count': len(comp_results['missing']),
+                'extra_count': len(comp_results['extra']),
+                'details': {
+                    'ref_file': comp_results['ref_file'],
+                    'prop_file': comp_results['prop_file'],
+                    'ref_count': comp_results['ref_count'],
+                    'prop_count': comp_results['prop_count'],
+                    'modified': comp_results['modified'],
+                    'missing': comp_results['missing'],
+                    'extra': comp_results['extra'],
+                },
+            }
+
+            total = len(comp_results['matches']) + len(comp_results['modified']) + len(comp_results['missing'])
+            pct = (len(comp_results['matches']) / total * 100) if total > 0 else 0
+            logger.info(
+                f"Comparaison [{comp_key}] "
+                f"correspondances={len(comp_results['matches'])}/{total} ({pct:.0f}%) "
+                f"différences={len(comp_results['modified'])} "
+                f"manquants={len(comp_results['missing'])} "
+                f"extra={len(comp_results['extra'])}"
+            )
+
+        except Exception as e:
+            logger.error(f"Erreur comparaison [{comp_key}]: {e}")
+            comparisons[comp_key] = {
+                'ref_source': ref_source.name,
+                'prop_source': source.name,
+                'status': 'error',
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+            }
+
+    if comparisons:
+        result_data['comparisons'] = comparisons
 
     # Sauvegarder le fichier résultat
     save_result(result_data)
